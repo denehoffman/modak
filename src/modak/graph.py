@@ -1,3 +1,4 @@
+from __future__ import annotations
 from collections import defaultdict
 from typing import override
 from typing_extensions import Literal
@@ -118,9 +119,7 @@ def minimize_all_crossings(layers: list[list[Task]], max_iters=10):
         i += 1
 
 
-def boxed_task(
-    task: Task, *, padding: tuple[int, int, int, int] = (0, 1, 0, 1), terminal: bool = False
-) -> tuple[list[str], tuple[list[int], list[int]], tuple[int, int]]:
+def boxed_task(task: Task, *, padding: tuple[int, int, int, int] = (0, 1, 0, 1), terminal: bool = False) -> list[str]:
     n_in = len(task.inputs)
     min_width = max(len(task.name), n_in)
     text = task.name.center(min_width)
@@ -131,7 +130,7 @@ def boxed_task(
     out.append(f"┃{' ' * pad_left}{text}{' ' * pad_right}┃")
     out.extend([f"┃{' ' * (len(text) + pad_left + pad_right)}┃" for _ in range(pad_bottom)])
     out.append(f"┗{('┳' * n_in).center(len(text) + pad_left + pad_right, '━')}┛")
-    return out, input_coords, output_coord
+    return out
 
 
 def boxed_layer(
@@ -157,9 +156,9 @@ def boxed_layer(
 def print_layers(layers: list[list[Task]]):
     for i, layer in enumerate(layers):
         terminal = i == 0
-        if not terminal:
-            print(" TEXT HERE ")
-        print("\n".join(boxed_layer(layer, terminal=terminal)))
+        layer_text = boxed_layer(layer, terminal=terminal)
+        print("\n")
+        print("\n".join(layer_text))
 
 
 def main():
