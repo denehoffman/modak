@@ -1,12 +1,13 @@
 from __future__ import annotations
+
 from collections import defaultdict
+from itertools import permutations
 from typing import override
-from typing_extensions import Literal
+
+import numpy as np
 
 from modak import Task
-import numpy as np
-from numpy.typing import NDArray
-from itertools import permutations
+from modak.text import TextObject, TextPanel, TextBox, BorderType
 
 
 def layer_tasks(tasks: list[Task]) -> list[list[Task]]:
@@ -119,46 +120,67 @@ def minimize_all_crossings(layers: list[list[Task]], max_iters=10):
         i += 1
 
 
-def boxed_task(task: Task, *, padding: tuple[int, int, int, int] = (0, 1, 0, 1), terminal: bool = False) -> list[str]:
-    n_in = len(task.inputs)
-    min_width = max(len(task.name), n_in)
-    text = task.name.center(min_width)
-    pad_top, pad_right, pad_bottom, pad_left = padding
-    out = []
-    out.append(f"┏{('┻' if not terminal else '━').center(len(text) + pad_left + pad_right, '━')}┓")
-    out.extend([f"┃{' ' * (len(text) + pad_left + pad_right)}┃" for _ in range(pad_top)])
-    out.append(f"┃{' ' * pad_left}{text}{' ' * pad_right}┃")
-    out.extend([f"┃{' ' * (len(text) + pad_left + pad_right)}┃" for _ in range(pad_bottom)])
-    out.append(f"┗{('┳' * n_in).center(len(text) + pad_left + pad_right, '━')}┛")
-    return out
+def render_task_layers(layers: list[list[Task]]) -> TextPanel:
+    panel = TextPanel()
+    task_positions: dict[str, tuple[int, int]] = {}
+    task_boxes: dict[str, TextBox] = {}
 
+    x_spacing = 12
+    y_spacing = 10
 
-def boxed_layer(
-    layer: list[Task],
-    *,
-    padding: tuple[int, int, int, int] = (0, 1, 0, 1),
-    margin: tuple[int, int] = (1, 1),
-    terminal: bool = False,
-) -> list[str]:
-    pad_top, _, pad_bottom, _ = padding
-    margin_left, margin_right = margin
-    out = []
-    boxed_tasks = [boxed_task(task, padding=padding, terminal=terminal) for task in layer]
-    out.extend(
-        [
-            f"{' ' * margin_left}{(' ' * (margin_left + margin_right)).join([bt[irow] for bt in boxed_tasks])}{' ' * margin_right}"
-            for irow in range(pad_top + pad_bottom + 3)
-        ]
-    )
-    return out
+    # Place boxes
+    for layer_idx, layer in enumerate(layers):
+        y = 2 + layer_idx * y_spacing
+        for task_idx, task in enumerate(layer):
+            x = 4 + task_idx * x_spacing
+            box = TextBox.from_string(task.name, border_type=BorderType.DOUBLE)
+            box.penalty_group = "box"
+            task_boxes[task.name] = box
+            task_positions[task.name] = (x, y)
+            panel.add_object(box, x, y)
 
+    # Group edges by source input task
+    fanouts: defaultdict[str, list[tuple[tuple[int, int], tuple[int, int]]]] = defaultdict(list)
 
-def print_layers(layers: list[list[Task]]):
-    for i, layer in enumerate(layers):
-        terminal = i == 0
-        layer_text = boxed_layer(layer, terminal=terminal)
-        print("\n")
-        print("\n".join(layer_text))
+    for layer in layers:
+        for task in layer:
+            tx, ty = task_positions[task.name]
+            tgt_box = task_boxes[task.name]
+
+            inputs = [t for t in task.inputs if t.name in task_positions]
+            num_inputs = len(inputs)
+
+            for i, input_task in enumerate(inputs):
+                sx, sy = task_positions[input_task.name]
+                src_box = task_boxes[input_task.name]
+
+                # Source point: center top of input
+                start_x = sx + src_box.width // 2
+                start_y = sy - 1
+
+                # Destination: evenly spaced along bottom of this task's box
+                frac = (i + 1) / (num_inputs + 1)
+                offset = int(frac * (tgt_box.width - 1))
+                end_x = tx + offset
+                end_y = ty + tgt_box.height
+
+                fanouts[input_task.name].append(((start_x, start_y), (end_x, end_y)))
+
+    # Draw lines for each input task's fanout
+    for source, pairs in fanouts.items():
+        starts, ends = zip(*pairs)
+        path_obj = panel.connect_many(
+            list(starts),
+            list(ends),
+            style="yellow",
+            border_type=BorderType.LIGHT,
+            bend_penalty=3,
+            group_penalties={"box": 80, "line": 10},
+        )
+        path_obj.penalty_group = "line"
+        panel.add_object(path_obj, 0, 0)
+
+    return panel
 
 
 def main():
@@ -175,22 +197,6 @@ def main():
         def __repr__(self):
             return self.name
 
-    # m = SimpleTask("--M--", inputs=[])
-    # l = SimpleTask("--L--", inputs=[m])
-    # k = SimpleTask("--K--", inputs=[])
-    # j = SimpleTask("--J--", inputs=[])
-    # i = SimpleTask("--I--", inputs=[])
-    # h = SimpleTask("--H--", inputs=[m])
-    # g = SimpleTask("--G--", inputs=[])
-    # f = SimpleTask("--F--", inputs=[h, i, j])
-    # e = SimpleTask("--E--", inputs=[])
-    # d = SimpleTask("--D--", inputs=[k, l])
-    # c = SimpleTask("--C--", inputs=[d])
-    # b = SimpleTask("--B--", inputs=[m, e])
-    # a = SimpleTask("--A--", inputs=[e, f, g])
-    #
-    # layers = layer_tasks([a, b, c, d, e, f, g, h, i, j, k, l, m])
-    #
     m = SimpleTask("--M--", inputs=[])
     l = SimpleTask("--L--", inputs=[])
     k = SimpleTask("--K--", inputs=[])
@@ -208,7 +214,10 @@ def main():
     layers = layer_tasks([a, b, c, d, e, f, g, h, i, j, k, l, m])
 
     minimize_all_crossings(layers)
-    print_layers(layers)
+    panel = render_task_layers(layers)
+    from rich import print
+
+    print(panel)
 
 
 if __name__ == "__main__":
