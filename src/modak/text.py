@@ -1,59 +1,60 @@
 from __future__ import annotations
 
 import heapq
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from itertools import permutations
-from typing import ClassVar, Literal, Union
+from typing import Literal, Union, override
 
 from rich.text import Text
 
 
 class BorderType(Enum):
-    LIGHT = "light"
-    HEAVY = "heavy"
-    DOUBLE = "double"
+    LIGHT = 'light'
+    HEAVY = 'heavy'
+    DOUBLE = 'double'
 
 
 BORDER_CHARS = {
     BorderType.LIGHT: {
-        "hor": "─",
-        "ver": "│",
-        "dl": "┐",
-        "dr": "┌",
-        "ul": "┘",
-        "ur": "└",
-        "t": "┴",
-        "b": "┬",
-        "l": "┤",
-        "r": "├",
-        "x": "┼",
+        'hor': '─',
+        'ver': '│',
+        'dl': '┐',
+        'dr': '┌',
+        'ul': '┘',
+        'ur': '└',
+        't': '┴',
+        'b': '┬',
+        'l': '┤',
+        'r': '├',
+        'x': '┼',
     },
     BorderType.HEAVY: {
-        "hor": "━",
-        "ver": "┃",
-        "dl": "┓",
-        "dr": "┏",
-        "ul": "┛",
-        "ur": "┗",
-        "t": "┻",
-        "b": "┳",
-        "l": "┫",
-        "r": "┣",
-        "x": "╋",
+        'hor': '━',
+        'ver': '┃',
+        'dl': '┓',
+        'dr': '┏',
+        'ul': '┛',
+        'ur': '┗',
+        't': '┻',
+        'b': '┳',
+        'l': '┫',
+        'r': '┣',
+        'x': '╋',
     },
     BorderType.DOUBLE: {
-        "hor": "═",
-        "ver": "║",
-        "dl": "╗",
-        "dr": "╔",
-        "ul": "╝",
-        "ur": "╚",
-        "t": "╩",
-        "b": "╦",
-        "l": "╣",
-        "r": "╠",
-        "x": "╬",
+        'hor': '═',
+        'ver': '║',
+        'dl': '╗',
+        'dr': '╔',
+        'ul': '╝',
+        'ur': '╚',
+        't': '╩',
+        'b': '╦',
+        'l': '╣',
+        'r': '╠',
+        'x': '╬',
     },
 }
 
@@ -89,17 +90,39 @@ class Down:
 Segment = Union[Left, Right, Up, Down]
 
 
-class TextObject:
+class AbstractTextObject(ABC):
+    def __init__(self, *, penalty_group: str | None = None):
+        self.penalty_group = penalty_group
+
+    @property
+    @abstractmethod
+    def chars(self) -> list[StyledChar]: ...
+
+    @property
+    @abstractmethod
+    def height(self) -> int: ...
+
+    @property
+    @abstractmethod
+    def width(self) -> int: ...
+
+
+class TextObject(AbstractTextObject):
     def __init__(self):
-        self.chars: list[StyledChar] = []
+        self._chars: list[StyledChar] = []
         self.penalty_group: str | None = None
+
+    @property
+    @override
+    def chars(self) -> list[StyledChar]:
+        return self._chars
 
     def with_penalty_group(self, group: str) -> TextObject:
         self.penalty_group = group
         return self
 
     @classmethod
-    def from_string(cls, text: str, *, style: str = "", transparent: bool = False) -> TextObject:
+    def from_string(cls, text: str, *, style: str = '', transparent: bool = False) -> TextObject:
         obj = cls()
         lines = text.splitlines()
         max_width = max(len(line) for line in lines)
@@ -107,7 +130,7 @@ class TextObject:
         for y, line in enumerate(lines):
             padded = line.ljust(max_width)
             for x, char in enumerate(padded):
-                if transparent and char == " ":
+                if transparent and char == ' ':
                     continue
                 obj.add_char(char, x, y, style=style)
         return obj
@@ -118,7 +141,7 @@ class TextObject:
         segments: list[Segment],
         *,
         border_type: BorderType = BorderType.LIGHT,
-        style: str = "",
+        style: str = '',
         start_char: str | None = None,
         start_style: str | None = None,
         end_char: str | None = None,
@@ -153,7 +176,7 @@ class TextObject:
             elif i == len(visited) - 1 and end_char:
                 obj.add_char(end_char, x, y, style=end_style or style)
             else:
-                obj.add_char("#", x, y, style=style)
+                obj.add_char('#', x, y, style=style)
 
         obj.merge_path_intersections(border_type)
         return obj
@@ -163,115 +186,90 @@ class TextObject:
         path_map: dict[tuple[int, int], set[str]] = {}
 
         for c in self.chars:
-            if c.char in chars.values() or c.char == "#":
+            if c.char in chars.values() or c.char == '#':
                 x, y = c.x, c.y
-                for dx, dy, direction in [(-1, 0, "left"), (1, 0, "right"), (0, -1, "up"), (0, 1, "down")]:
+                for dx, dy, direction in [(-1, 0, 'left'), (1, 0, 'right'), (0, -1, 'up'), (0, 1, 'down')]:
                     if any(
-                        (c2.x, c2.y) == (x + dx, y + dy) and (c2.char in chars.values() or c2.char == "#")
+                        (c2.x, c2.y) == (x + dx, y + dy) and (c2.char in chars.values() or c2.char == '#')
                         for c2 in self.chars
                     ):
                         path_map.setdefault((x, y), set()).add(direction)
 
         conn_map = {
-            frozenset(["left"]): chars["hor"],
-            frozenset(["right"]): chars["hor"],
-            frozenset(["left", "right"]): chars["hor"],
-            frozenset(["up"]): chars["ver"],
-            frozenset(["down"]): chars["ver"],
-            frozenset(["up", "down"]): chars["ver"],
-            frozenset(["down", "right"]): chars["dr"],
-            frozenset(["down", "left"]): chars["dl"],
-            frozenset(["up", "right"]): chars["ur"],
-            frozenset(["up", "left"]): chars["ul"],
-            frozenset(["left", "right", "up"]): chars["t"],
-            frozenset(["left", "right", "down"]): chars["b"],
-            frozenset(["up", "down", "right"]): chars["r"],
-            frozenset(["up", "down", "left"]): chars["l"],
-            frozenset(["up", "down", "left", "right"]): chars["x"],
+            frozenset(['left']): chars['hor'],
+            frozenset(['right']): chars['hor'],
+            frozenset(['left', 'right']): chars['hor'],
+            frozenset(['up']): chars['ver'],
+            frozenset(['down']): chars['ver'],
+            frozenset(['up', 'down']): chars['ver'],
+            frozenset(['down', 'right']): chars['dr'],
+            frozenset(['down', 'left']): chars['dl'],
+            frozenset(['up', 'right']): chars['ur'],
+            frozenset(['up', 'left']): chars['ul'],
+            frozenset(['left', 'right', 'up']): chars['t'],
+            frozenset(['left', 'right', 'down']): chars['b'],
+            frozenset(['up', 'down', 'right']): chars['r'],
+            frozenset(['up', 'down', 'left']): chars['l'],
+            frozenset(['up', 'down', 'left', 'right']): chars['x'],
         }
 
         new_chars = []
         seen = {(c.x, c.y): c for c in self.chars}
         for (x, y), dirs in path_map.items():
-            new_char = conn_map.get(frozenset(dirs), chars["x"])
-            style = seen.get((x, y), StyledChar("", "", x, y)).style
+            new_char = conn_map.get(frozenset(dirs), chars['x'])
+            style = seen.get((x, y), StyledChar('', '', x, y)).style
             new_chars.append(StyledChar(new_char, style, x, y))
 
-        self.chars = [c for c in self.chars if (c.x, c.y) not in path_map] + new_chars
+        self._chars = [c for c in self.chars if (c.x, c.y) not in path_map] + new_chars
 
     @property
+    @override
     def width(self) -> int:
         if not self.chars:
             return 0
         return max(c.x for c in self.chars) - min(c.x for c in self.chars) + 1
 
     @property
+    @override
     def height(self) -> int:
         if not self.chars:
             return 0
         return max(c.y for c in self.chars) - min(c.y for c in self.chars) + 1
 
-    def add_char(self, char: str, x: int, y: int, *, style: str = ""):
+    def add_char(self, char: str, x: int, y: int, *, style: str = ''):
         self.chars.append(StyledChar(char, style, x, y))
 
     def __rich__(self):
         if not self.chars:
-            return ""
+            return ''
         min_x = min(c.x for c in self.chars)
         min_y = min(c.y for c in self.chars)
         shifted = [StyledChar(c.char, c.style, c.x - min_x, c.y - min_y) for c in self.chars]
         width = max(c.x for c in shifted) + 1
         height = max(c.y for c in shifted) + 1
-        grid = [[Text(" ") for _ in range(width)] for _ in range(height)]
+        grid = [[Text(' ') for _ in range(width)] for _ in range(height)]
         for c in shifted:
             grid[c.y][c.x] = Text(c.char, style=c.style)
-        return Text("\n").join(Text().join(row) for row in grid)
+        return Text('\n').join(Text().join(row) for row in grid)
 
 
-class TextPanel:
-    DEFAULT_CHARACTER_PENALTIES: ClassVar[dict[str, int]] = {
-        "─": 5,
-        "│": 5,
-        "┌": 10,
-        "┐": 10,
-        "└": 10,
-        "┘": 10,
-        "├": 10,
-        "┤": 10,
-        "┬": 10,
-        "┴": 10,
-        "┼": 10,
-        "━": 5,
-        "┃": 5,
-        "┏": 10,
-        "┓": 10,
-        "┗": 10,
-        "┛": 10,
-        "┣": 10,
-        "┫": 10,
-        "┳": 10,
-        "┻": 10,
-        "╋": 10,
-        "═": 5,
-        "║": 5,
-        "╔": 10,
-        "╗": 10,
-        "╚": 10,
-        "╝": 10,
-        "╠": 10,
-        "╣": 10,
-        "╦": 10,
-        "╩": 10,
-        "╬": 10,
-    }
-
+class TextPanel(AbstractTextObject):
     def __init__(self):
-        self.objects: list[tuple[TextObject, int, int]] = []
+        self.objects: list[tuple[AbstractTextObject, int, int]] = []
 
-    def add_object(self, obj: TextObject, x_offset: int, y_offset: int):
+    def add_object(self, obj: AbstractTextObject, x_offset: int, y_offset: int):
         self.objects.append((obj, x_offset, y_offset))
 
     @property
+    @override
+    def chars(self) -> list[StyledChar]:
+        all_chars = []
+        for obj, dx, dy in self.objects:
+            all_chars.extend([StyledChar(c.char, c.style, c.x + dx, c.y + dy) for c in obj.chars])
+        return all_chars
+
+    @property
+    @override
     def width(self) -> int:
         if not self.objects:
             return 0
@@ -279,6 +277,7 @@ class TextPanel:
         return max(all_x) - min(all_x) + 1 if all_x else 0
 
     @property
+    @override
     def height(self) -> int:
         if not self.objects:
             return 0
@@ -290,16 +289,16 @@ class TextPanel:
         for obj, dx, dy in self.objects:
             all_chars.extend([StyledChar(c.char, c.style, c.x + dx, c.y + dy) for c in obj.chars])
         if not all_chars:
-            return ""
+            return ''
         min_x = min(c.x for c in all_chars)
         min_y = min(c.y for c in all_chars)
         shifted = [StyledChar(c.char, c.style, c.x - min_x, c.y - min_y) for c in all_chars]
         width = max(c.x for c in shifted) + 1
         height = max(c.y for c in shifted) + 1
-        grid = [[Text(" ") for _ in range(width)] for _ in range(height)]
+        grid = [[Text(' ') for _ in range(width)] for _ in range(height)]
         for c in shifted:
             grid[c.y][c.x] = Text(c.char, style=c.style)
-        return Text("\n").join(Text().join(row) for row in grid)
+        return Text('\n').join(Text().join(row) for row in grid)
 
     def find_path(  # noqa: PLR0912, PLR0915
         self,
@@ -309,7 +308,7 @@ class TextPanel:
         bend_penalty: int = 1,
         group_penalties: dict[str, int] | None = None,
     ) -> tuple[list[Segment], int, int, int]:
-        owner_map: dict[tuple[int, int], TextObject] = {}
+        owner_map: dict[tuple[int, int], AbstractTextObject] = {}
         for obj, dx, dy in self.objects:
             for c in obj.chars:
                 pos = (c.x + dx, c.y + dy)
@@ -348,7 +347,7 @@ class TextPanel:
             path.append(cur)
             cur = came_from.get(cur, (None,))[0]
             if cur is None:
-                msg = "No path found"
+                msg = 'No path found'
                 raise ValueError(msg)
         path.append(start)
         path.reverse()
@@ -385,7 +384,7 @@ class TextPanel:
         end: tuple[int, int],
         *,
         border_type: BorderType = BorderType.LIGHT,
-        style: str = "",
+        style: str = '',
         start_char: str | None = None,
         start_style: str | None = None,
         end_char: str | None = None,
@@ -413,18 +412,18 @@ class TextPanel:
         starts: list[tuple[int, int]],
         ends: list[tuple[int, int]],
         border_type: BorderType = BorderType.LIGHT,
-        style: str = "",
+        style: str = '',
         start_char: str | None = None,
         start_style: str | None = None,
         end_char: str | None = None,
         end_style: str | None = None,
         bend_penalty: int = 1,
         group_penalties: dict[str, int] | None = None,
-        merge_penalty_group: str = "_mergepath",
+        merge_penalty_group: str = '_mergepath',
     ) -> TextObject:
         assert len(starts) == len(ends)
         best_obj = None
-        min_total_cost = float("inf")
+        min_total_cost = float('inf')
         path_pairs = list(zip(starts, ends))
 
         for ordering in permutations(path_pairs):
@@ -474,7 +473,7 @@ class TextBox(TextObject):
         self,
         content: TextObject,
         *,
-        border_style: str = "",
+        border_style: str = '',
         border_type: BorderType = BorderType.LIGHT,
         padding: tuple[int, int, int, int] = (0, 1, 0, 1),
     ):
@@ -501,27 +500,27 @@ class TextBox(TextObject):
         chars = BORDER_CHARS[border_type]
 
         for x in range(box_width):
-            self.add_char(chars["hor"], x, 0, style=border_style)
-            self.add_char(chars["hor"], x, box_height - 1, style=border_style)
+            self.add_char(chars['hor'], x, 0, style=border_style)
+            self.add_char(chars['hor'], x, box_height - 1, style=border_style)
         for y in range(box_height):
-            self.add_char(chars["ver"], 0, y, style=border_style)
-            self.add_char(chars["ver"], box_width - 1, y, style=border_style)
+            self.add_char(chars['ver'], 0, y, style=border_style)
+            self.add_char(chars['ver'], box_width - 1, y, style=border_style)
 
-        self.add_char(chars["dr"], 0, 0, style=border_style)
-        self.add_char(chars["dl"], box_width - 1, 0, style=border_style)
-        self.add_char(chars["ur"], 0, box_height - 1, style=border_style)
-        self.add_char(chars["ul"], box_width - 1, box_height - 1, style=border_style)
+        self.add_char(chars['dr'], 0, 0, style=border_style)
+        self.add_char(chars['dl'], box_width - 1, 0, style=border_style)
+        self.add_char(chars['ur'], 0, box_height - 1, style=border_style)
+        self.add_char(chars['ul'], box_width - 1, box_height - 1, style=border_style)
 
     @classmethod
     def from_string(
         cls,
         text: str,
         *,
-        border_style: str = "",
-        style: str = "",
+        border_style: str = '',
+        style: str = '',
         border_type: BorderType = BorderType.LIGHT,
         padding: tuple[int, int, int, int] = (0, 1, 0, 1),
-        justify: Literal["left", "center", "right"] = "center",
+        justify: Literal['left', 'center', 'right'] = 'center',
         transparent: bool = False,
     ) -> TextBox:
         lines = text.splitlines()
@@ -529,21 +528,21 @@ class TextBox(TextObject):
         aligned_lines = []
 
         for line in lines:
-            if justify == "left":
+            if justify == 'left':
                 text = line.ljust(max_line_length)
-            elif justify == "center":
+            elif justify == 'center':
                 text = line.center(max_line_length)
             else:
                 text = line.rjust(max_line_length)
             aligned_lines.append(text)
 
-        padded_lines = aligned_lines or [""]
-        text_obj = TextObject.from_string("\n".join(padded_lines), style=style, transparent=transparent)
+        padded_lines = aligned_lines or ['']
+        text_obj = TextObject.from_string('\n'.join(padded_lines), style=style, transparent=transparent)
 
         return cls(text_obj, border_style=border_style, border_type=border_type, padding=padding)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     from rich import print
     from itertools import groupby
 
@@ -557,9 +556,9 @@ if __name__ == "__main__":
 
     # Define node rows
     rows = [
-        ["A", "B", "C"],
-        ["D", "E", "F", "G"],
-        ["H", "I", "J", "K"],
+        ['A', 'B', 'C'],
+        ['D', 'E', 'F', 'G'],
+        ['H', 'I', 'J', 'K'],
     ]
 
     # Position and create boxes
@@ -573,7 +572,7 @@ if __name__ == "__main__":
             x = 4 + col_index * x_spacing
             y = 2 + row_index * y_spacing
             box = TextBox.from_string(label, border_type=BorderType.DOUBLE)
-            box.penalty_group = "box"
+            box.penalty_group = 'box'
             boxes[label] = box
             positions[label] = (x, y)
 
@@ -584,23 +583,23 @@ if __name__ == "__main__":
 
             for dx in (-1, 1):
                 panel.add_object(
-                    TextObject.from_string(" ", style="on black").with_penalty_group("box"), cx_bot + dx, cy_bot
+                    TextObject.from_string(' ', style='on black').with_penalty_group('box'), cx_bot + dx, cy_bot
                 )
                 panel.add_object(
-                    TextObject.from_string(" ", style="on black").with_penalty_group("box"), cx_top + dx, cy_top
+                    TextObject.from_string(' ', style='on black').with_penalty_group('box'), cx_top + dx, cy_top
                 )
             panel.add_object(box, x, y)
 
     # Original directed edges
     edges = {
-        "H": ["D", "E", "F"],
-        "I": ["E"],
-        "J": ["A", "G"],
-        "K": ["G"],
-        "D": ["A", "B"],
-        "E": ["A"],
-        "F": ["B"],
-        "G": ["B"],
+        'H': ['D', 'E', 'F'],
+        'I': ['E'],
+        'J': ['A', 'G'],
+        'K': ['G'],
+        'D': ['A', 'B'],
+        'E': ['A'],
+        'F': ['B'],
+        'G': ['B'],
     }
 
     # Group edges by identical target sets
@@ -631,12 +630,12 @@ if __name__ == "__main__":
         path_obj = panel.connect_many(
             starts,
             ends,
-            style="yellow",
+            style='yellow',
             border_type=BorderType.LIGHT,
             bend_penalty=1,
-            group_penalties={"box": 100, "line": 60},
+            group_penalties={'box': 100, 'line': 60},
         )
-        path_obj.penalty_group = "line"
+        path_obj.penalty_group = 'line'
         panel.add_object(path_obj, 0, 0)
 
     print(panel)
