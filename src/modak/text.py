@@ -176,7 +176,7 @@ class TextObject(AbstractTextObject):
             elif i == len(visited) - 1 and end_char:
                 obj.add_char(end_char, x, y, style=end_style or style)
             else:
-                obj.add_char('#', x, y, style=style)
+                obj.add_char('?', x, y, style=style)
 
         obj.merge_path_intersections(border_type)
         return obj
@@ -186,13 +186,10 @@ class TextObject(AbstractTextObject):
         path_map: dict[tuple[int, int], set[str]] = {}
 
         for c in self.chars:
-            if c.char in chars.values() or c.char == '#':
+            if c.char in chars.values() or c.char == '?':
                 x, y = c.x, c.y
                 for dx, dy, direction in [(-1, 0, 'left'), (1, 0, 'right'), (0, -1, 'up'), (0, 1, 'down')]:
-                    if any(
-                        (c2.x, c2.y) == (x + dx, y + dy) and (c2.char in chars.values() or c2.char == '#')
-                        for c2 in self.chars
-                    ):
+                    if any((c2.x, c2.y) == (x + dx, y + dy) for c2 in self.chars):
                         path_map.setdefault((x, y), set()).add(direction)
 
         conn_map = {
@@ -314,12 +311,12 @@ class TextPanel(AbstractTextObject):
                 pos = (c.x + dx, c.y + dy)
                 owner_map[pos] = obj
 
-        def cost(pos, prev_dir=None, new_dir=None):
+        def cost(pos: tuple[int, int], prev_dir: tuple[int, int] | None = None, new_dir: tuple[int, int] | None = None):
             group = (owner_map[pos].penalty_group if pos in owner_map else None) if pos in owner_map else None
             base = 20
             if group_penalties and group in group_penalties:
                 base = group_penalties[group]
-            bend = bend_penalty if prev_dir and prev_dir != new_dir else 0
+            bend = bend_penalty if prev_dir != new_dir else 0
             return base + bend
 
         frontier = [(0, start, (0, 0))]
@@ -428,7 +425,7 @@ class TextPanel(AbstractTextObject):
 
         for ordering in permutations(path_pairs):
             temp_panel = TextPanel()
-            temp_panel.objects = list(self.objects)  # shallow copy
+            temp_panel.objects = list(self.objects)
             paths = []
             total_cost = 0
 
@@ -483,7 +480,6 @@ class TextBox(TextObject):
         content_min_x = min((c.x for c in content.chars), default=0)
         content_min_y = min((c.y for c in content.chars), default=0)
 
-        # Shift and copy content into box interior
         for c in content.chars:
             self.add_char(
                 c.char,
@@ -540,102 +536,3 @@ class TextBox(TextObject):
         text_obj = TextObject.from_string('\n'.join(padded_lines), style=style, transparent=transparent)
 
         return cls(text_obj, border_style=border_style, border_type=border_type, padding=padding)
-
-
-if __name__ == '__main__':
-    from rich import print
-    from itertools import groupby
-
-    panel = TextPanel()
-
-    def bottom_center(box, x, y):
-        return (x + box.width // 2, y + box.height)
-
-    def top_center(box, x, y):
-        return (x + box.width // 2, y - 1)
-
-    # Define node rows
-    rows = [
-        ['A', 'B', 'C'],
-        ['D', 'E', 'F', 'G'],
-        ['H', 'I', 'J', 'K'],
-    ]
-
-    # Position and create boxes
-    boxes = {}
-    positions = {}
-    x_spacing = 12
-    y_spacing = 12
-
-    for row_index, row in enumerate(rows):
-        for col_index, label in enumerate(row):
-            x = 4 + col_index * x_spacing
-            y = 2 + row_index * y_spacing
-            box = TextBox.from_string(label, border_type=BorderType.DOUBLE)
-            box.penalty_group = 'box'
-            boxes[label] = box
-            positions[label] = (x, y)
-
-            cx_bot = x + box.width // 2
-            cy_bot = y + box.height
-            cx_top = cx_bot
-            cy_top = y - 1
-
-            for dx in (-1, 1):
-                panel.add_object(
-                    TextObject.from_string(' ', style='on black').with_penalty_group('box'), cx_bot + dx, cy_bot
-                )
-                panel.add_object(
-                    TextObject.from_string(' ', style='on black').with_penalty_group('box'), cx_top + dx, cy_top
-                )
-            panel.add_object(box, x, y)
-
-    # Original directed edges
-    edges = {
-        'H': ['D', 'E', 'F'],
-        'I': ['E'],
-        'J': ['A', 'G'],
-        'K': ['G'],
-        'D': ['A', 'B'],
-        'E': ['A'],
-        'F': ['B'],
-        'G': ['B'],
-    }
-
-    # Group edges by identical target sets
-    sorted_edges = sorted(edges.items(), key=lambda x: tuple(sorted(x[1])))
-    groups: list[set[str]] = []
-
-    for _, group in groupby(sorted_edges, key=lambda x: tuple(sorted(x[1]))):
-        group_sources = {source for source, _ in group}
-        groups.append(group_sources)
-
-    # Build merged paths for each group
-    for group in groups:
-        starts = []
-        ends = []
-        seen_edges = set()
-
-        for source in group:
-            sx, sy = positions[source]
-            for target in edges.get(source, []):
-                edge = (source, target)
-                if edge in seen_edges:
-                    continue
-                seen_edges.add(edge)
-                tx, ty = positions[target]
-                starts.append(top_center(boxes[source], sx, sy))
-                ends.append(bottom_center(boxes[target], tx, ty))
-
-        path_obj = panel.connect_many(
-            starts,
-            ends,
-            style='yellow',
-            border_type=BorderType.LIGHT,
-            bend_penalty=1,
-            group_penalties={'box': 100, 'line': 60},
-        )
-        path_obj.penalty_group = 'line'
-        panel.add_object(path_obj, 0, 0)
-
-    print(panel)

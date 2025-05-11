@@ -215,6 +215,8 @@ def render_task_layers(layers: list[list[Task]]) -> TextPanel:
             border_type=linestyles[task_dict[task_name].status],
             bend_penalty=0,
             group_penalties={'box': 1000, 'line': 60},
+            start_char='',
+            end_char='▲',
         )
         path_obj.penalty_group = 'line'
         panel.add_object(path_obj, 0, 0)
