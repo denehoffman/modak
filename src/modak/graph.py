@@ -2,57 +2,58 @@ from __future__ import annotations
 
 from collections import defaultdict
 from itertools import chain, permutations
-from typing import override
+from typing import ClassVar, override
 
 import numpy as np
-from textdraw import BorderType, TextBox, TextObject, TextPanel
+from textdraw import AbstractTextObject, BorderType, StyledChar, TextBox, TextObject, TextPanel
 
 from modak import Task, TaskStatus
 
 
-def layer_tasks(tasks: list[Task]) -> list[list[Task]]:
-    name_to_task: dict[str, Task] = {}
+class TaskLike:
+    def __init__(self, task_name: str, task_inputs: list[str], task_status: str):
+        self.task_name = task_name
+        self.task_inputs = task_inputs
+        self.task_status = task_status
 
-    def collect(task: Task):
-        if task.name in name_to_task:
-            return
-        name_to_task[task.name] = task
-        for input_task in task.inputs:
-            collect(input_task)
+    def __repr__(self) -> str:
+        return f'{self.task_name} ({self.task_inputs})'
 
-    for task in tasks:
-        collect(task)
 
-    children: dict[str, list[Task]] = defaultdict(list)
-    for task in name_to_task.values():
-        for input_task in task.inputs:
-            children[input_task.name].append(task)
+def layer_tasks(tasks: list[TaskLike]) -> list[list[TaskLike]]:
+    name_to_tasklike: dict[str, TaskLike] = {t.task_name: t for t in tasks}
+
+    children: dict[TaskLike, list[TaskLike]] = defaultdict(list)
+    for tasklike in name_to_tasklike.values():
+        for input_task_name in tasklike.task_inputs:
+            children[name_to_tasklike[input_task_name]].append(tasklike)
 
     memo: dict[str, int] = {}
 
-    def longest_path_from(task: Task) -> int:
-        if task.name in memo:
-            return memo[task.name]
-        if task.name not in children or not children[task.name]:
-            memo[task.name] = 0
+    def longest_path_from(tasklike: TaskLike) -> int:
+        name = tasklike.task_name
+        if name in memo:
+            return memo[name]
+        if tasklike not in children or not children[tasklike]:
+            memo[name] = 0
         else:
-            memo[task.name] = 1 + max(longest_path_from(child) for child in children[task.name])
-        return memo[task.name]
+            memo[name] = 1 + max(longest_path_from(child) for child in children[tasklike])
+        return memo[name]
 
-    for task in name_to_task.values():
-        longest_path_from(task)
+    for tasklike in name_to_tasklike.values():
+        longest_path_from(tasklike)
 
-    depth_to_tasks: dict[int, list[Task]] = defaultdict(list)
-    for task in name_to_task.values():
-        depth = memo[task.name]
-        depth_to_tasks[depth].append(task)
+    depth_to_tasks: dict[int, list[TaskLike]] = defaultdict(list)
+    for tasklike in name_to_tasklike.values():
+        depth = memo[tasklike.task_name]
+        depth_to_tasks[depth].append(tasklike)
 
     return [depth_to_tasks[d] for d in sorted(depth_to_tasks)]
 
 
-def count_crossings(top_layer: list[Task], bottom_layer: list[Task]) -> int:
+def count_crossings(top_layer: list[TaskLike], bottom_layer: list[TaskLike]) -> int:
     matrix = np.array(
-        [[bottom_task in top_task.inputs for bottom_task in bottom_layer] for top_task in top_layer], dtype=np.int_
+        [[bottom_task in top_task.task_inputs for bottom_task in bottom_layer] for top_task in top_layer], dtype=np.int_
     )
     p, q = matrix.shape
     count = 0
@@ -64,13 +65,13 @@ def count_crossings(top_layer: list[Task], bottom_layer: list[Task]) -> int:
     return count
 
 
-def count_all_crossings(layers: list[list[Task]]) -> int:
+def count_all_crossings(layers: list[list[TaskLike]]) -> int:
     return sum(count_crossings(top_layer, bottom_layer) for top_layer, bottom_layer in zip(layers[:-1], layers[1:]))
 
 
 def minimize_crossings(
-    top_permutations: list[list[Task]], bottom_permutations: list[list[Task]]
-) -> tuple[tuple[int, int], tuple[list[Task], list[Task]]]:
+    top_permutations: list[list[TaskLike]], bottom_permutations: list[list[TaskLike]]
+) -> tuple[tuple[int, int], tuple[list[TaskLike], list[TaskLike]]]:
     min_crossings = count_crossings(top_permutations[0], bottom_permutations[0])
     i_top_min = 0
     i_bottom_min = 0
@@ -84,7 +85,7 @@ def minimize_crossings(
     return (i_top_min, i_bottom_min), (top_permutations[i_top_min], bottom_permutations[i_bottom_min])
 
 
-def minimize_all_crossings(layers: list[list[Task]], max_iters=10):
+def minimize_all_crossings(layers: list[list[TaskLike]], max_iters=10):
     minimized = False
     i = 0
     down = True
@@ -121,150 +122,124 @@ def minimize_all_crossings(layers: list[list[Task]], max_iters=10):
 
 
 class TaskBox(TextObject):
-    def __init__(self, task: Task):
-        super().__init__(penalty_group)
+    STYLES: ClassVar = {
+        'waiting': 'dim',
+        'running': 'blue',
+        'done': 'green',
+        'failed': 'red',
+        'skipped': 'cyan',
+        'queued': 'yellow',
+        'canceled': 'magenta',
+    }
+    BORDER_TYPES: ClassVar = {
+        'waiting': BorderType.LIGHT,
+        'running': BorderType.HEAVY,
+        'done': BorderType.HEAVY,
+        'failed': BorderType.HEAVY,
+        'skipped': BorderType.HEAVY,
+        'queued': BorderType.LIGHT,
+        'canceled': BorderType.LIGHT,
+    }
+
+    def __init__(
+        self, task_name: str, task_status: str, num_task_inputs: int, x: int, y: int, *, has_output: bool = True
+    ):
+        super().__init__(penalty_group='taskbox')
+        self.num_task_inputs = num_task_inputs
+        min_width = max(num_task_inputs, len(task_name))
+        diff = min_width - len(task_name)
+        self.box = TextBox.from_string(
+            task_name,
+            border_style=TaskBox.STYLES[task_status],
+            style='bold',
+            border_type=BorderType.DOUBLE,
+            padding=(0, 1 + diff // 2, 0, 1 + diff // 2),
+        )
+        self.x = x
+        self.y = y
+        self.has_output = has_output
+        self.xy_output = (x + self.box.width // 2, y - 1)
+        self.xy_inputs = [
+            (x + i - num_task_inputs // 2 + self.box.width // 2, y + self.box.height) for i in range(num_task_inputs)
+        ]
+        self.barrier = TextObject.from_string(' ')
+
+    @property
+    @override
+    def chars(self) -> list[StyledChar]:
+        panel = TextPanel([(self.box, self.x, self.y)])
+        if self.has_output:
+            panel.add_object(self.barrier, self.xy_output[0] - 1, self.xy_output[1])
+            panel.add_object(self.barrier, self.xy_output[0] + 1, self.xy_output[1])
+        if self.num_task_inputs > 0:
+            panel.add_object(self.barrier, self.xy_inputs[0][0] - 1, self.xy_inputs[0][1])
+            panel.add_object(self.barrier, self.xy_inputs[-1][0] + 1, self.xy_inputs[-1][1])
+        return panel.chars
 
 
-def render_task_layers(layers: list[list[Task]]) -> TextPanel:
+def render_task_layers(layers: list[list[TaskLike]]) -> TextPanel:
     panel = TextPanel()
-    task_positions: dict[str, tuple[int, int]] = {}
-    task_boxes: dict[str, TextPanel] = {}
-    task_dict: dict[str, Task] = {task.name: task for task in chain(*layers)}
-    styles = {
-        TaskStatus.WAITING: "dim",
-        TaskStatus.RUNNING: "blue",
-        TaskStatus.DONE: "green",
-        TaskStatus.FAILED: "red",
-        TaskStatus.SKIPPED: "cyan",
-        TaskStatus.QUEUED: "yellow",
-        TaskStatus.CANCELED: "magenta",
-    }
-    linestyles = {
-        TaskStatus.WAITING: BorderType.LIGHT,
-        TaskStatus.RUNNING: BorderType.HEAVY,
-        TaskStatus.DONE: BorderType.HEAVY,
-        TaskStatus.FAILED: BorderType.HEAVY,
-        TaskStatus.SKIPPED: BorderType.HEAVY,
-        TaskStatus.QUEUED: BorderType.LIGHT,
-        TaskStatus.CANCELED: BorderType.LIGHT,
-    }
+    # task_positions: dict[str, tuple[int, int]] = {}
+    task_boxes: dict[str, TaskBox] = {}
+    task_dict: dict[str, TaskLike] = {tasklike.task_name: tasklike for tasklike in chain(*layers)}
 
+    x_spacing = 4
     y_spacing = 10
     for layer_idx, layer in enumerate(layers):
         x_offset = 0
         x_length = 0
-        for task in layer:
-            x_length += len(task.name) + 4 + 4
-
-        for task in layer:
-            task_panel = TextPanel()
-            min_width = max(len(task.inputs), len(task.name))
-            diff = min_width - len(task.name)
-            box = TextBox.from_string(
-                task.name,
-                border_type=BorderType.DOUBLE,
-                justify="center",
-                padding=(0, 1 + diff // 2, 0, 1 + diff // 2),
-                border_style=styles[task.status],
+        x_length = sum(
+            [
+                max([len(task_line) for task_line in tasklike.task_name.split('\n')]) + 2 * x_spacing
+                for tasklike in layer
+            ]
+        )
+        for tasklike in layer:
+            task_box = TaskBox(
+                tasklike.task_name,
+                tasklike.task_status,
+                len(tasklike.task_inputs),
+                x_offset - x_length // 2,
+                2 + layer_idx * y_spacing,
             )
-
-            barrier = TextObject.from_string(" ")
-            task_panel.add_object(box, 0, 0)
-            task_panel.add_object(barrier, box.width // 2 - 1, -1)
-            task_panel.add_object(barrier, box.width // 2 + 1, -1)
-
-            num_inputs = len(task.inputs)
-            if num_inputs > 0:
-                input_diff = box.width - num_inputs
-                task_panel.add_object(barrier, input_diff // 2 - 1, box.height)
-                task_panel.add_object(barrier, (input_diff // 2 + num_inputs), box.height)
-
-            task_panel.penalty_group = "box"
-            task_boxes[task.name] = task_panel
-            x = x_offset - x_length // 2
-            x_offset += box.width + 4
-            y = 2 + layer_idx * y_spacing
-            task_positions[task.name] = (x, y)
-            panel.add_object(task_panel, x, y)
+            task_boxes[tasklike.task_name] = task_box
+            x_offset += task_box.width + x_spacing
+            panel.add_object(task_box)
 
     fanouts: defaultdict[str, list[tuple[tuple[int, int], tuple[int, int]]]] = defaultdict(list)
 
     for ilayer, layer in enumerate(layers):
         sublayers = [t for la in layers[ilayer:] for t in la]
-        for task in layer:
-            tx, ty = task_positions[task.name]
-            tgt_box = task_boxes[task.name]
-
-            inputs = [t for t in sublayers if t in task.inputs]
-            num_inputs = len(inputs)
-
-            for i, input_task in enumerate(inputs):
-                sx, sy = task_positions[input_task.name]
-                src_box = task_boxes[input_task.name]
-
-                start_x = sx + src_box.width // 2
-                start_y = sy - 1
-
-                t_offset_x = i - num_inputs // 2 + tgt_box.width // 2
-                end_x = tx + t_offset_x
-                end_y = ty + tgt_box.height - 2
-
-                fanouts[input_task.name].append(((start_x, start_y), (end_x, end_y)))
+        for tasklike in layer:
+            tgt_box = task_boxes[tasklike.task_name]
+            inputs = [t for t in sublayers if t.task_name in tasklike.task_inputs]
+            for i, input_tasklike in enumerate(inputs):
+                src_box = task_boxes[input_tasklike.task_name]
+                start_x, start_y = src_box.xy_output
+                end_x, end_y = tgt_box.xy_inputs[i]
+                fanouts[input_tasklike.task_name].append(((start_x, start_y), (end_x, end_y)))
 
     for task_name, pairs in fanouts.items():
         starts, ends = zip(*pairs)
         path_obj = panel.connect_many(
             list(starts),
             list(ends),
-            style=styles[task_dict[task_name].status],
-            border_type=linestyles[task_dict[task_name].status],
-            group_penalties={"box": 1000, "line": 10},
-            start_char="",
-            end_char="▲",
+            style=TaskBox.STYLES[task_dict[task_name].task_status],
+            border_type=TaskBox.BORDER_TYPES[task_dict[task_name].task_status],
+            group_penalties={'taskbox': 1000, 'line': 10},
+            start_char='',
+            end_char='▲',
         )
-        path_obj.penalty_group = "line"
+        path_obj.penalty_group = 'line'
         panel.add_object(path_obj)
 
     return panel
 
 
-def main():
-    class SimpleTask(Task):
-        def __init__(self, name: str, inputs: list[Task] | None = None, status: TaskStatus = TaskStatus.WAITING):
-            if inputs is None:
-                inputs = []
-            super().__init__(name=name, inputs=inputs)
-            self.status = status
-
-        def run(self):
-            pass
-
-        @override
-        def __repr__(self):
-            return self.name
-
-    m = SimpleTask("M", inputs=[], status=TaskStatus.FAILED)
-    l = SimpleTask("L", inputs=[], status=TaskStatus.QUEUED)
-    k = SimpleTask("K", inputs=[], status=TaskStatus.DONE)
-    j = SimpleTask("J", inputs=[k, l])
-    i = SimpleTask("I", inputs=[k, m], status=TaskStatus.FAILED)
-    h = SimpleTask("H", inputs=[], status=TaskStatus.QUEUED)
-    g = SimpleTask("G", inputs=[k], status=TaskStatus.RUNNING)
-    f = SimpleTask("F", inputs=[], status=TaskStatus.QUEUED)
-    e = SimpleTask("E", inputs=[g, j])
-    d = SimpleTask("D", inputs=[h, i, j], status=TaskStatus.FAILED)
-    c = SimpleTask("C", inputs=[g])
-    b = SimpleTask("B", inputs=[c, f])
-    a = SimpleTask("A", inputs=[c, d, e, f, l], status=TaskStatus.FAILED)
-
-    layers = layer_tasks([a, b, c, d, e, f, g, h, i, j, k, l, m])
-
+def from_state(state: dict[str, dict]) -> TextPanel:
+    tasklikes: list[TaskLike] = []
+    for task, entry in state.items():
+        tasklikes.append(TaskLike(task, entry['dependencies'], entry['status']))
+    layers = layer_tasks(tasklikes)
     minimize_all_crossings(layers)
-    panel = render_task_layers(layers)
-    from rich import print
-
-    print(panel)
-
-
-if __name__ == "__main__":
-    main()
+    return render_task_layers(layers)

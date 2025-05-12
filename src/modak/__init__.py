@@ -9,23 +9,23 @@ from pathlib import Path
 from queue import Queue
 from threading import Lock, Thread
 
-STATE_FILE = Path(".modak/state.json")
+STATE_FILE = Path('.modak/state.json')
 
 
 class TaskStatus(Enum):
-    WAITING = "waiting"
-    QUEUED = "queued"
-    RUNNING = "running"
-    DONE = "done"
-    FAILED = "failed"
-    SKIPPED = "skipped"
-    CANCELED = "canceled"
+    WAITING = 'waiting'
+    QUEUED = 'queued'
+    RUNNING = 'running'
+    DONE = 'done'
+    FAILED = 'failed'
+    SKIPPED = 'skipped'
+    CANCELED = 'canceled'
 
 
 @dataclass
 class Task(ABC):
     name: str
-    inputs: list["Task"] = field(default_factory=list)
+    inputs: list['Task'] = field(default_factory=list)
     outputs: list[Path] = field(default_factory=list)
     status: TaskStatus = field(default=TaskStatus.WAITING)
     status_lock: Lock = field(default_factory=lambda: Lock())
@@ -35,7 +35,7 @@ class Task(ABC):
         pass
 
     def __repr__(self):
-        return f"<Task {self.name} ({self.status})>"
+        return f'<Task {self.name} ({self.status})>'
 
     def compute_output_hashes(self):
         hashes = {}
@@ -60,16 +60,17 @@ class TaskQueue:
         self.tasks[task.name] = task
         self.task_graph.add(task.name, *[dep.name for dep in task.inputs])
 
-    def load_state_file(self):
+    def load_state_file(self, tasks: list[Task]):
         if STATE_FILE.exists():
             with STATE_FILE.open() as f:
-                self.state = json.load(f)
+                state = json.load(f)
+                self.state = {task: entry for task, entry in state.items() if task in tasks}
         else:
             self.state = {}
 
     def write_state_file(self):
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with STATE_FILE.open("w") as f:
+        with STATE_FILE.open('w') as f:
             json.dump(self.state, f, indent=2)
 
     def set_task_status(self, task: Task, status: TaskStatus):
@@ -78,16 +79,19 @@ class TaskQueue:
 
         with self.lock:
             entry = self.state.get(task.name, {})
-            entry["status"] = status.value
+            entry['status'] = status.value
+
+            if 'dependencies' not in entry:
+                entry['dependencies'] = [inp.name for inp in task.inputs]
 
             now = time.time()
             if status == TaskStatus.RUNNING:
-                entry["start_time"] = now
+                entry['start_time'] = now
             elif status in {TaskStatus.DONE, TaskStatus.FAILED}:
-                entry["end_time"] = now
+                entry['end_time'] = now
 
             # Save current outputs
-            entry["outputs"] = task.compute_output_hashes()
+            entry['outputs'] = task.compute_output_hashes()
 
             # Save hashes of inputs for future validation
             if status == TaskStatus.DONE:
@@ -96,7 +100,7 @@ class TaskQueue:
                     for output in dep.outputs:
                         if output.exists():
                             input_hashes[str(output)] = hashlib.md5(output.read_bytes()).hexdigest()  # noqa: S324
-                entry["input_hashes"] = input_hashes
+                entry['input_hashes'] = input_hashes
 
             self.state[task.name] = entry
             self.write_state_file()
@@ -112,7 +116,7 @@ class TaskQueue:
         if not state_entry:
             return False
 
-        expected_outputs = state_entry.get("outputs", {})
+        expected_outputs = state_entry.get('outputs', {})
         if task.outputs and not expected_outputs:
             return False
 
@@ -128,7 +132,7 @@ class TaskQueue:
                 return False
 
         if task.inputs:
-            expected_inputs = state_entry.get("input_hashes", {})
+            expected_inputs = state_entry.get('input_hashes', {})
             for dep in task.inputs:
                 for output in dep.outputs:
                     output_path = str(output)
@@ -169,7 +173,7 @@ class TaskQueue:
                 self.set_task_status(task, TaskStatus.CANCELED)
 
     def run(self, tasks: list[Task]):
-        self.load_state_file()
+        self.load_state_file(tasks)
         visited: set[str] = set()
 
         def collect(task: Task):
