@@ -1,41 +1,94 @@
 import hashlib
 import json
+import logging
+import re
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
 from graphlib import TopologicalSorter
 from pathlib import Path
 from queue import Queue
 from threading import Lock, Thread
+import unicodedata
 
-STATE_FILE = Path('.modak/state.json')
+from rich.logging import RichHandler
+
+STATE_FILE = Path(".modak/state.json")
 
 
 class TaskStatus(Enum):
-    WAITING = 'waiting'
-    QUEUED = 'queued'
-    RUNNING = 'running'
-    DONE = 'done'
-    FAILED = 'failed'
-    SKIPPED = 'skipped'
-    CANCELED = 'canceled'
+    WAITING = "waiting"
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    CANCELED = "canceled"
+
+
+def slugify(value: str) -> str:
+    """
+    From <https://github.com/django/django/blob/825ddda26a14847c30522f4d1112fb506123420d/django/utils/text.py#L453>
+    """
+    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    value = re.sub(r"[^\w\s-]", "", value.lower())
+    return re.sub(r"[-\s]+", "-", value).strip("-_")
 
 
 @dataclass
 class Task(ABC):
     name: str
-    inputs: list['Task'] = field(default_factory=list)
+    _: KW_ONLY
+    inputs: list["Task"] = field(default_factory=list)
     outputs: list[Path] = field(default_factory=list)
-    status: TaskStatus = field(default=TaskStatus.WAITING)
-    status_lock: Lock = field(default_factory=lambda: Lock())
+    _status: TaskStatus = field(default=TaskStatus.WAITING)
+    _status_lock: Lock = field(default_factory=lambda: Lock())
+    _logger: logging.Logger = field(init=False, repr=False)
+
+    def __post_init__(self):
+        self._logger = logging.getLogger(f"modak.{self.name}")
+        self._logger.setLevel(logging.DEBUG)
+        self._logger.propagate = False
+        log_path = Path(".modak") / f"{slugify(self.name)}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RichHandler(rich_tracebacks=True)
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setFormatter(handler.formatter)
+        self._logger.handlers.clear()
+        self._logger.addHandler(file_handler)
 
     @abstractmethod
     def run(self):
         pass
 
+    def capture_run(self):
+        try:
+            self.run()
+        except Exception as e:
+            self.log_exception(e)
+            raise
+
     def __repr__(self):
-        return f'<Task {self.name} ({self.status})>'
+        return f"<Task {self.name} ({self._status}) at {hex(id(self))}>"
+
+    def log_debug(self, msg: str):
+        self._logger.debug(msg)
+
+    def log_info(self, msg: str):
+        self._logger.info(msg)
+
+    def log_warning(self, msg: str):
+        self._logger.warning(msg)
+
+    def log_error(self, msg: str):
+        self._logger.error(msg)
+
+    def log_critical(self, msg: str):
+        self._logger.critical(msg)
+
+    def log_exception(self, e: Exception):
+        self._logger.exception(e, stack_info=True)
 
     def compute_output_hashes(self):
         hashes = {}
@@ -70,28 +123,28 @@ class TaskQueue:
 
     def write_state_file(self):
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with STATE_FILE.open('w') as f:
+        with STATE_FILE.open("w") as f:
             json.dump(self.state, f, indent=2)
 
     def set_task_status(self, task: Task, status: TaskStatus):
-        with task.status_lock:
-            task.status = status
+        with task._status_lock:
+            task._status = status
 
         with self.lock:
             entry = self.state.get(task.name, {})
-            entry['status'] = status.value
+            entry["status"] = status.value
 
-            if 'dependencies' not in entry:
-                entry['dependencies'] = [inp.name for inp in task.inputs]
+            if "dependencies" not in entry:
+                entry["dependencies"] = [inp.name for inp in task.inputs]
 
             now = time.time()
             if status == TaskStatus.RUNNING:
-                entry['start_time'] = now
+                entry["start_time"] = now
             elif status in {TaskStatus.DONE, TaskStatus.FAILED}:
-                entry['end_time'] = now
+                entry["end_time"] = now
 
             # Save current outputs
-            entry['outputs'] = task.compute_output_hashes()
+            entry["outputs"] = task.compute_output_hashes()
 
             # Save hashes of inputs for future validation
             if status == TaskStatus.DONE:
@@ -100,23 +153,23 @@ class TaskQueue:
                     for output in dep.outputs:
                         if output.exists():
                             input_hashes[str(output)] = hashlib.md5(output.read_bytes()).hexdigest()  # noqa: S324
-                entry['input_hashes'] = input_hashes
+                entry["input_hashes"] = input_hashes
 
             self.state[task.name] = entry
             self.write_state_file()
 
     def all_deps_done(self, task: Task) -> bool:
-        return all(dep.status in {TaskStatus.DONE, TaskStatus.SKIPPED} for dep in task.inputs)
+        return all(dep._status in {TaskStatus.DONE, TaskStatus.SKIPPED} for dep in task.inputs)
 
     def any_deps_failed(self, task: Task) -> bool:
-        return any(dep.status == TaskStatus.FAILED for dep in task.inputs)
+        return any(dep._status == TaskStatus.FAILED for dep in task.inputs)
 
     def outputs_valid(self, task: Task) -> bool:
         state_entry = self.state.get(task.name)
         if not state_entry:
             return False
 
-        expected_outputs = state_entry.get('outputs', {})
+        expected_outputs = state_entry.get("outputs", {})
         if task.outputs and not expected_outputs:
             return False
 
@@ -132,7 +185,7 @@ class TaskQueue:
                 return False
 
         if task.inputs:
-            expected_inputs = state_entry.get('input_hashes', {})
+            expected_inputs = state_entry.get("input_hashes", {})
             for dep in task.inputs:
                 for output in dep.outputs:
                     output_path = str(output)
@@ -147,7 +200,7 @@ class TaskQueue:
         return True
 
     def propagate_failure(self, task: Task):
-        if task.status == TaskStatus.FAILED:
+        if task._status == TaskStatus.FAILED:
             return
         self.set_task_status(task, TaskStatus.FAILED)
         for t in self.tasks.values():
@@ -161,7 +214,7 @@ class TaskQueue:
                 break
             self.set_task_status(task, TaskStatus.RUNNING)
             try:
-                task.run()
+                task.capture_run()
                 self.set_task_status(task, TaskStatus.DONE)
             except Exception:  # noqa: BLE001
                 self.propagate_failure(task)
@@ -169,7 +222,7 @@ class TaskQueue:
 
     def cancel_all(self):
         for task in self.tasks.values():
-            if task.status in {TaskStatus.WAITING, TaskStatus.QUEUED, TaskStatus.RUNNING}:
+            if task._status in {TaskStatus.WAITING, TaskStatus.QUEUED, TaskStatus.RUNNING}:
                 self.set_task_status(task, TaskStatus.CANCELED)
 
     def run(self, tasks: list[Task]):
@@ -206,7 +259,8 @@ class TaskQueue:
                         pending.remove(name)
                     elif self.all_deps_done(task):
                         if self.outputs_valid(task):
-                            if task.status != TaskStatus.DONE:
+                            if task._status != TaskStatus.DONE:
+                                task.log_info(f"Task {task} was already completed. Skipping.")
                                 self.set_task_status(task, TaskStatus.SKIPPED)
                         else:
                             self.set_task_status(task, TaskStatus.QUEUED)

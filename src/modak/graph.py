@@ -5,9 +5,9 @@ from itertools import chain, permutations
 from typing import ClassVar, override
 
 import numpy as np
-from textdraw import AbstractTextObject, BorderType, StyledChar, TextBox, TextObject, TextPanel
+from textdraw import BorderType, StyledChar, TextBox, TextObject, TextPanel
 
-from modak import Task, TaskStatus
+from modak import slugify
 
 
 class TaskLike:
@@ -17,7 +17,7 @@ class TaskLike:
         self.task_status = task_status
 
     def __repr__(self) -> str:
-        return f'{self.task_name} ({self.task_inputs})'
+        return f"{self.task_name} ({self.task_inputs})"
 
 
 def layer_tasks(tasks: list[TaskLike]) -> list[list[TaskLike]]:
@@ -123,35 +123,36 @@ def minimize_all_crossings(layers: list[list[TaskLike]], max_iters=10):
 
 class TaskBox(TextObject):
     STYLES: ClassVar = {
-        'waiting': 'dim',
-        'running': 'blue',
-        'done': 'green',
-        'failed': 'red',
-        'skipped': 'cyan',
-        'queued': 'yellow',
-        'canceled': 'magenta',
+        "waiting": "dim",
+        "running": "blue",
+        "done": "green",
+        "failed": "red",
+        "skipped": "cyan",
+        "queued": "yellow",
+        "canceled": "magenta",
     }
     BORDER_TYPES: ClassVar = {
-        'waiting': BorderType.LIGHT,
-        'running': BorderType.HEAVY,
-        'done': BorderType.HEAVY,
-        'failed': BorderType.HEAVY,
-        'skipped': BorderType.HEAVY,
-        'queued': BorderType.LIGHT,
-        'canceled': BorderType.LIGHT,
+        "waiting": BorderType.LIGHT,
+        "running": BorderType.HEAVY,
+        "done": BorderType.HEAVY,
+        "failed": BorderType.HEAVY,
+        "skipped": BorderType.HEAVY,
+        "queued": BorderType.LIGHT,
+        "canceled": BorderType.LIGHT,
     }
 
     def __init__(
         self, task_name: str, task_status: str, num_task_inputs: int, x: int, y: int, *, has_output: bool = True
     ):
-        super().__init__(penalty_group='taskbox')
+        super().__init__(penalty_group="taskbox")
+        task_name = slugify(task_name)
         self.num_task_inputs = num_task_inputs
         min_width = max(num_task_inputs, len(task_name))
         diff = min_width - len(task_name)
         self.box = TextBox.from_string(
             task_name,
             border_style=TaskBox.STYLES[task_status],
-            style='bold',
+            style="bold",
             border_type=BorderType.DOUBLE,
             padding=(0, 1 + diff // 2, 0, 1 + diff // 2),
         )
@@ -162,7 +163,7 @@ class TaskBox(TextObject):
         self.xy_inputs = [
             (x + i - num_task_inputs // 2 + self.box.width // 2, y + self.box.height) for i in range(num_task_inputs)
         ]
-        self.barrier = TextObject.from_string(' ')
+        self.barrier = TextObject.from_string(" ")
 
     @property
     @override
@@ -190,7 +191,7 @@ def render_task_layers(layers: list[list[TaskLike]]) -> TextPanel:
         x_length = 0
         x_length = sum(
             [
-                max([len(task_line) for task_line in tasklike.task_name.split('\n')]) + 2 * x_spacing
+                max([len(task_line) for task_line in tasklike.task_name.split("\n")]) + 2 * x_spacing
                 for tasklike in layer
             ]
         )
@@ -226,11 +227,11 @@ def render_task_layers(layers: list[list[TaskLike]]) -> TextPanel:
             list(ends),
             style=TaskBox.STYLES[task_dict[task_name].task_status],
             border_type=TaskBox.BORDER_TYPES[task_dict[task_name].task_status],
-            group_penalties={'taskbox': 1000, 'line': 10},
-            start_char='',
-            end_char='▲',
+            group_penalties={"taskbox": 1000, "line": 10},
+            start_char="",
+            end_char="▲",
         )
-        path_obj.penalty_group = 'line'
+        path_obj.penalty_group = "line"
         panel.add_object(path_obj)
 
     return panel
@@ -239,7 +240,7 @@ def render_task_layers(layers: list[list[TaskLike]]) -> TextPanel:
 def from_state(state: dict[str, dict]) -> TextPanel:
     tasklikes: list[TaskLike] = []
     for task, entry in state.items():
-        tasklikes.append(TaskLike(task, entry['dependencies'], entry['status']))
+        tasklikes.append(TaskLike(task, entry["dependencies"], entry["status"]))
     layers = layer_tasks(tasklikes)
     minimize_all_crossings(layers)
     return render_task_layers(layers)

@@ -69,7 +69,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.2.5" },
-    { name = "textdraw", specifier = ">=0.1.1" },
+    { name = "textdraw", specifier = ">=0.1.2" },
     { name = "textual", specifier = ">=3.2.0" },
     { name = "tzlocal", specifier = ">=5.3.1" },
 ]
@@ -135,14 +135,14 @@ wheels = [
 
 [[package]]
 name = "textdraw"
-version = "0.1.1"
+version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/53/6564635860e62771da14e9d1f69b6e017343abc4c8f19b34b2d3563068ad/textdraw-0.1.1.tar.gz", hash = "sha256:ef6ac7339bb298f757e5cefdcba993f5043a4e99d6c41bd3e7ccdb722117f3fc", size = 18321, upload-time = "2025-05-11T22:23:59Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/07/ad/b4a2adc7875e7c27f332586371f325812ad645d9a77d560c6291b28c1912/textdraw-0.1.2.tar.gz", hash = "sha256:f366b82467b4b7c33a7beadc114f9958fc88ab5e651b1d78478cb62a8b589dba", size = 18302, upload-time = "2025-05-11T22:33:51.863Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/71/c6/28ccfa4da0d610aef0e579166c33dcda958fb4bf32b95d1f856f0bff4f2f/textdraw-0.1.1-py3-none-any.whl", hash = "sha256:97f0bf78655fe5c5f4c985ef370f0b444fa525473b0be884f88d6f383ec23c62", size = 16359, upload-time = "2025-05-11T22:23:57.324Z" },
+    { url = "https://files.pythonhosted.org/packages/56/9b/e607547946aa30fac14307b6844fb8e0903e2fc0dc0249f104e2555524c1/textdraw-0.1.2-py3-none-any.whl", hash = "sha256:1e365b1fe62e0347bb59054792697d2faa07798fd38ef25bc75eab56719c475b", size = 16358, upload-time = "2025-05-11T22:33:50.098Z" },
 ]
 
 [[package]]
