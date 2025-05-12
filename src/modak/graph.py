@@ -5,9 +5,9 @@ from itertools import chain, permutations
 from typing import override
 
 import numpy as np
+from textdraw import BorderType, TextBox, TextObject, TextPanel
 
 from modak import Task, TaskStatus
-from modak.text import TextObject, TextPanel, TextBox, BorderType
 
 
 def layer_tasks(tasks: list[Task]) -> list[list[Task]]:
@@ -120,19 +120,24 @@ def minimize_all_crossings(layers: list[list[Task]], max_iters=10):
         i += 1
 
 
+class TaskBox(TextObject):
+    def __init__(self, task: Task):
+        super().__init__(penalty_group)
+
+
 def render_task_layers(layers: list[list[Task]]) -> TextPanel:
     panel = TextPanel()
     task_positions: dict[str, tuple[int, int]] = {}
     task_boxes: dict[str, TextPanel] = {}
     task_dict: dict[str, Task] = {task.name: task for task in chain(*layers)}
     styles = {
-        TaskStatus.WAITING: 'dim',
-        TaskStatus.RUNNING: 'blue',
-        TaskStatus.DONE: 'green',
-        TaskStatus.FAILED: 'red',
-        TaskStatus.SKIPPED: 'cyan',
-        TaskStatus.QUEUED: 'yellow',
-        TaskStatus.CANCELED: 'magenta',
+        TaskStatus.WAITING: "dim",
+        TaskStatus.RUNNING: "blue",
+        TaskStatus.DONE: "green",
+        TaskStatus.FAILED: "red",
+        TaskStatus.SKIPPED: "cyan",
+        TaskStatus.QUEUED: "yellow",
+        TaskStatus.CANCELED: "magenta",
     }
     linestyles = {
         TaskStatus.WAITING: BorderType.LIGHT,
@@ -158,12 +163,12 @@ def render_task_layers(layers: list[list[Task]]) -> TextPanel:
             box = TextBox.from_string(
                 task.name,
                 border_type=BorderType.DOUBLE,
-                justify='center',
+                justify="center",
                 padding=(0, 1 + diff // 2, 0, 1 + diff // 2),
                 border_style=styles[task.status],
             )
 
-            barrier = TextObject.from_string(' ')
+            barrier = TextObject.from_string(" ")
             task_panel.add_object(box, 0, 0)
             task_panel.add_object(barrier, box.width // 2 - 1, -1)
             task_panel.add_object(barrier, box.width // 2 + 1, -1)
@@ -174,7 +179,7 @@ def render_task_layers(layers: list[list[Task]]) -> TextPanel:
                 task_panel.add_object(barrier, input_diff // 2 - 1, box.height)
                 task_panel.add_object(barrier, (input_diff // 2 + num_inputs), box.height)
 
-            task_panel.penalty_group = 'box'
+            task_panel.penalty_group = "box"
             task_boxes[task.name] = task_panel
             x = x_offset - x_length // 2
             x_offset += box.width + 4
@@ -213,13 +218,12 @@ def render_task_layers(layers: list[list[Task]]) -> TextPanel:
             list(ends),
             style=styles[task_dict[task_name].status],
             border_type=linestyles[task_dict[task_name].status],
-            bend_penalty=0,
-            group_penalties={'box': 1000, 'line': 60},
-            start_char='',
-            end_char='▲',
+            group_penalties={"box": 1000, "line": 10},
+            start_char="",
+            end_char="▲",
         )
-        path_obj.penalty_group = 'line'
-        panel.add_object(path_obj, 0, 0)
+        path_obj.penalty_group = "line"
+        panel.add_object(path_obj)
 
     return panel
 
@@ -239,19 +243,19 @@ def main():
         def __repr__(self):
             return self.name
 
-    m = SimpleTask('M', inputs=[], status=TaskStatus.FAILED)
-    l = SimpleTask('L', inputs=[], status=TaskStatus.QUEUED)
-    k = SimpleTask('K', inputs=[], status=TaskStatus.DONE)
-    j = SimpleTask('J', inputs=[k, l])
-    i = SimpleTask('I', inputs=[k, m], status=TaskStatus.FAILED)
-    h = SimpleTask('H', inputs=[], status=TaskStatus.QUEUED)
-    g = SimpleTask('G', inputs=[k], status=TaskStatus.RUNNING)
-    f = SimpleTask('F', inputs=[], status=TaskStatus.QUEUED)
-    e = SimpleTask('E', inputs=[g, j])
-    d = SimpleTask('D', inputs=[h, i, j], status=TaskStatus.FAILED)
-    c = SimpleTask('C', inputs=[g])
-    b = SimpleTask('B', inputs=[c, f])
-    a = SimpleTask('A', inputs=[c, d, e, f, l], status=TaskStatus.FAILED)
+    m = SimpleTask("M", inputs=[], status=TaskStatus.FAILED)
+    l = SimpleTask("L", inputs=[], status=TaskStatus.QUEUED)
+    k = SimpleTask("K", inputs=[], status=TaskStatus.DONE)
+    j = SimpleTask("J", inputs=[k, l])
+    i = SimpleTask("I", inputs=[k, m], status=TaskStatus.FAILED)
+    h = SimpleTask("H", inputs=[], status=TaskStatus.QUEUED)
+    g = SimpleTask("G", inputs=[k], status=TaskStatus.RUNNING)
+    f = SimpleTask("F", inputs=[], status=TaskStatus.QUEUED)
+    e = SimpleTask("E", inputs=[g, j])
+    d = SimpleTask("D", inputs=[h, i, j], status=TaskStatus.FAILED)
+    c = SimpleTask("C", inputs=[g])
+    b = SimpleTask("B", inputs=[c, f])
+    a = SimpleTask("A", inputs=[c, d, e, f, l], status=TaskStatus.FAILED)
 
     layers = layer_tasks([a, b, c, d, e, f, g, h, i, j, k, l, m])
 
@@ -262,5 +266,5 @@ def main():
     print(panel)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
