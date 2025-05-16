@@ -4,17 +4,33 @@ version = "0.1.0"
 description = "A simple, opinionated task manager"
 readme = "README.md"
 authors = [{ name = "Dene Hoffman", email = "denehoffman@me.com" }]
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
+  "click>=8.2.0",
   "numpy>=2.2.5",
   "textdraw>=0.1.2",
   "textual>=3.2.0",
   "tzlocal>=5.3.1",
 ]
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+keywords = ["task", "job", "scheduler", "monitor"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/denehoffman/textdraw"
+Repository = "https://github.com/denehoffman/textdraw"
+Issues = "https://github.com/denehoffman/textdraw/issues"
+
+[project.scripts]
+modak = "modak.monitor:main"
 
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
-[project.scripts]
-modak = "modak.monitor:main"
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"

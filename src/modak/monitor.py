@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
 
+import click
 import tzlocal
 from rich.text import Text
 from textual import on
@@ -12,14 +13,31 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, ScrollableContainer
 from textual.reactive import reactive
-from textual.widgets import DataTable, Footer, Header, RichLog, Static, TabbedContent, TabPane
+from textual.widgets import (
+    DataTable,
+    Footer,
+    Header,
+    RichLog,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 
-from modak import slugify
+from modak import MODAK_DIR, STATE_FILE, slugify
 from modak.graph import from_state
 
-STATE_FILE = Path(".modak/state.json")
+MONITOR_MODAK_DIR = MODAK_DIR
+MONITOR_STATE_FILE = STATE_FILE
 
-STATUS_ORDER = {"done": 0, "skipped": 1, "running": 2, "queued": 3, "waiting": 4, "failed": 5, "canceled": 6}
+STATUS_ORDER = {
+    "done": 0,
+    "skipped": 1,
+    "running": 2,
+    "queued": 3,
+    "waiting": 4,
+    "failed": 5,
+    "canceled": 6,
+}
 STATUS_COLOR = {
     "done": "green",
     "skipped": "cyan",
@@ -92,8 +110,8 @@ QueueDisplay > #log_container {
     def refresh_table(self) -> None:
         table = self.query_one(DataTable)
         current_cursor_coordinate = table.cursor_coordinate
-        if STATE_FILE.exists():
-            with STATE_FILE.open() as f:
+        if MONITOR_STATE_FILE.exists():
+            with MONITOR_STATE_FILE.open() as f:
                 state = json.load(f)
         else:
             state = {}
@@ -117,7 +135,11 @@ QueueDisplay > #log_container {
             end = fmt_time(state[task].get("end_time"))
             self.rows.append((slug, status, start, end))
             table.add_row(
-                Text(slug, style="bold"), Text(status, style=f"bold {STATUS_COLOR[status]}"), start, end, key=slug
+                Text(slug, style="bold"),
+                Text(status, style=f"bold {STATUS_COLOR[status]}"),
+                start,
+                end,
+                key=slug,
             )
         table.cursor_coordinate = current_cursor_coordinate
 
@@ -125,7 +147,7 @@ QueueDisplay > #log_container {
         log_view = self.query_one(RichLog)
         if not self.selected_task:
             return
-        log_path = Path(".modak") / f"{self.selected_task}.log"
+        log_path = MONITOR_MODAK_DIR / f"{self.selected_task}.log"
 
         new_task = self.selected_task != self._current_task
         self._current_task = self.selected_task
@@ -161,8 +183,8 @@ class GraphDisplay(Static):
         self.set_interval(1.0, self.refresh_graph)
 
     def refresh_graph(self) -> None:
-        if STATE_FILE.exists():
-            new_state = STATE_FILE.read_text()
+        if MONITOR_STATE_FILE.exists():
+            new_state = MONITOR_STATE_FILE.read_text()
             if new_state != self.state:
                 self.state = new_state
                 graph = from_state(json.loads(self.state))
@@ -225,7 +247,7 @@ Tab {
             with TabPane("Graph", id="graph"):
                 yield ScrollableContainer(GraphDisplay(), id="graph_container")
             with TabPane("Info", id="info"):
-                yield Static("Modak Monitor v1.0\n\nThis is an info panel.", id="info_text")
+                yield Static("Modak Monitor\n\nThis is an info panel.", id="info_text")
         yield Footer()
 
     def action_show_tab(self, tab: str) -> None:
@@ -244,5 +266,17 @@ Tab {
         monitor.query_one(DataTable).focus()
 
 
-def main():
+@click.command()
+@click.option(
+    "-c",
+    "--cwd",
+    type=click.Path(exists=True, file_okay=False),
+    default=".",
+    help="Working directory containing .modak",
+)
+def main(cwd: Path):
+    global MONITOR_MODAK_DIR, MONITOR_STATE_FILE
+
+    MONITOR_MODAK_DIR = Path(cwd) / ".modak"
+    MONITOR_STATE_FILE = MONITOR_MODAK_DIR / "state.json"
     StateApp().run()
