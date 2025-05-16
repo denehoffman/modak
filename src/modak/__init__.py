@@ -16,33 +16,33 @@ from threading import Lock, Thread
 
 from rich.logging import RichHandler
 
-STATE_FILE = Path('.modak/state.json')
+STATE_FILE = Path(".modak/state.json")
 
 
 class TaskStatus(Enum):
-    WAITING = 'waiting'
-    QUEUED = 'queued'
-    RUNNING = 'running'
-    DONE = 'done'
-    FAILED = 'failed'
-    SKIPPED = 'skipped'
-    CANCELED = 'canceled'
+    WAITING = "waiting"
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    CANCELED = "canceled"
 
 
 def slugify(value: str) -> str:
     """
     From <https://github.com/django/django/blob/825ddda26a14847c30522f4d1112fb506123420d/django/utils/text.py#L453>
     """
-    value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
-    value = re.sub(r'[^\w\s-]', '', value.lower())
-    return re.sub(r'[-\s]+', '-', value).strip('-_')
+    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    value = re.sub(r"[^\w\s-]", "", value.lower())
+    return re.sub(r"[-\s]+", "-", value).strip("-_")
 
 
 @dataclass
 class Task(ABC):
     name: str
     _: KW_ONLY
-    inputs: list['Task'] = field(default_factory=list)
+    inputs: list["Task"] = field(default_factory=list)
     outputs: list[Path] = field(default_factory=list)
     isolated: bool = False
     requirements: dict[str, int] = field(default_factory=dict)
@@ -51,13 +51,13 @@ class Task(ABC):
     _logger: logging.Logger = field(init=False, repr=False)
 
     def __post_init__(self):
-        self._logger = logging.getLogger(f'modak.{self.name}')
+        self._logger = logging.getLogger(f"modak.{self.name}")
         self._logger.setLevel(logging.DEBUG)
         self._logger.propagate = False
-        log_path = Path('.modak') / f'{slugify(self.name)}.log'
+        log_path = Path(".modak") / f"{slugify(self.name)}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         handler = RichHandler(rich_tracebacks=True)
-        file_handler = logging.FileHandler(log_path, encoding='utf-8')
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setFormatter(handler.formatter)
         self._logger.handlers.clear()
         self._logger.addHandler(file_handler)
@@ -74,7 +74,7 @@ class Task(ABC):
             raise
 
     def __repr__(self):
-        return f'<Task {self.name} ({self._status}) at {hex(id(self))}>'
+        return f"<Task {self.name} ({self._status}) at {hex(id(self))}>"
 
     def log_debug(self, msg: str):
         self._logger.debug(msg)
@@ -117,8 +117,6 @@ class TaskQueue:
         self.available_resources = self.total_resources.copy()
         self.isolated_running = False
         self.ready_tasks: list[Task] = []
-        self.dispatcher_thread = Thread(target=self.dispatcher)
-        self.running = False
 
     def add_task(self, task: Task):
         self.tasks[task.name] = task
@@ -134,7 +132,7 @@ class TaskQueue:
 
     def write_state_file(self):
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with STATE_FILE.open('w') as f:
+        with STATE_FILE.open("w") as f:
             json.dump(self.state, f, indent=2)
 
     def set_task_status(self, task: Task, status: TaskStatus):
@@ -143,19 +141,19 @@ class TaskQueue:
 
         with self.lock:
             entry = self.state.get(task.name, {})
-            entry['status'] = status.value
+            entry["status"] = status.value
 
-            if 'dependencies' not in entry:
-                entry['dependencies'] = [inp.name for inp in task.inputs]
+            if "dependencies" not in entry:
+                entry["dependencies"] = [inp.name for inp in task.inputs]
 
             now = time.time()
             if status == TaskStatus.RUNNING:
-                entry['start_time'] = now
+                entry["start_time"] = now
             elif status in {TaskStatus.DONE, TaskStatus.FAILED}:
-                entry['end_time'] = now
+                entry["end_time"] = now
 
             # Save current outputs
-            entry['outputs'] = task.compute_output_hashes()
+            entry["outputs"] = task.compute_output_hashes()
 
             # Save hashes of inputs for future validation
             if status == TaskStatus.DONE:
@@ -164,7 +162,7 @@ class TaskQueue:
                     for output in dep.outputs:
                         if output.exists():
                             input_hashes[str(output)] = hashlib.md5(output.read_bytes()).hexdigest()  # noqa: S324
-                entry['input_hashes'] = input_hashes
+                entry["input_hashes"] = input_hashes
 
             self.state[task.name] = entry
             self.write_state_file()
@@ -180,7 +178,7 @@ class TaskQueue:
         if not state_entry:
             return False
 
-        expected_outputs = state_entry.get('outputs', {})
+        expected_outputs = state_entry.get("outputs", {})
         if task.outputs and not expected_outputs:
             return False
 
@@ -196,7 +194,7 @@ class TaskQueue:
                 return False
 
         if task.inputs:
-            expected_inputs = state_entry.get('input_hashes', {})
+            expected_inputs = state_entry.get("input_hashes", {})
             for dep in task.inputs:
                 for output in dep.outputs:
                     output_path = str(output)
@@ -241,26 +239,8 @@ class TaskQueue:
         for task in self.tasks.values():
             for k, v in task.requirements.items():
                 if v > self.total_resources.get(k, 0):
-                    task.log_critical('Task requires more resources than are available.')
+                    task.log_critical("Task requires more resources than are available.")
                     self.propagate_failure(task)
-
-    def dispatcher(self):
-        while self.running:
-            with self.lock:
-                for task in list(self.ready_tasks):
-                    if task._status != TaskStatus.QUEUED:
-                        self.ready_tasks.remove(task)
-                        continue
-                    if task.isolated and self.isolated_running:
-                        continue
-                    if not self.can_run(task):
-                        continue
-                    self.allocate_resources(task)
-                    if task.isolated:
-                        self.isolated_running = True
-                    self.ready_tasks.remove(task)
-                    self.queue.put(task)
-            time.sleep(0.1)
 
     def worker(self):
         while True:
@@ -281,7 +261,6 @@ class TaskQueue:
             self.queue.task_done()
 
     def run(self, tasks: list[Task]):
-        self.running = True
         self.load_state_file(tasks)
         visited: set[str] = set()
 
@@ -300,8 +279,6 @@ class TaskQueue:
         self.task_graph.prepare()
         self.validate_requirements()
 
-        self.dispatcher_thread.start()
-
         for _ in range(self.max_workers):
             thread = Thread(target=self.worker)
             thread.start()
@@ -309,7 +286,24 @@ class TaskQueue:
 
         try:
             pending = set(self.task_graph.get_ready())
-            while pending:
+            while pending or any(t._status == TaskStatus.QUEUED for t in self.tasks.values()) or not self.queue.empty():
+                # Main dispatcher logic
+                with self.lock:
+                    for task in list(self.ready_tasks):
+                        if task._status != TaskStatus.QUEUED:
+                            self.ready_tasks.remove(task)
+                            continue
+                        if task.isolated and self.isolated_running:
+                            continue
+                        if not self.can_run(task):
+                            continue
+                        self.allocate_resources(task)
+                        if task.isolated:
+                            self.isolated_running = True
+                        self.ready_tasks.remove(task)
+                        self.queue.put(task)
+
+                # Topological scheduling
                 for name in list(pending):
                     task = self.tasks[name]
                     if self.any_deps_failed(task):
@@ -319,7 +313,7 @@ class TaskQueue:
                     elif self.all_deps_done(task):
                         if self.outputs_valid(task):
                             if task._status != TaskStatus.DONE:
-                                task.log_info(f'Task {task} was already completed. Skipping.')
+                                task.log_info(f"Task {task} was already completed. Skipping.")
                                 self.set_task_status(task, TaskStatus.SKIPPED)
                         else:
                             self.set_task_status(task, TaskStatus.QUEUED)
@@ -328,8 +322,8 @@ class TaskQueue:
                         pending.remove(name)
                 pending.update(self.task_graph.get_ready())
 
-            while any(t._status == TaskStatus.QUEUED for t in self.tasks.values()) or not self.queue.empty():
                 time.sleep(0.1)
+
             self.queue.join()
         except KeyboardInterrupt:
             self.cancel_all()
@@ -344,5 +338,3 @@ class TaskQueue:
                 self.queue.put(None)
             for t in self.threads:
                 t.join()
-            self.running = False
-            self.dispatcher_thread.join()
