@@ -1,0 +1,73 @@
+{
+  "cpu_task_3": {
+    "status": "skipped",
+    "inputs": [
+      "cpu_task_6"
+    ],
+    "outputs": [
+      "/home/dene/opt/modak/cpu_task_3_output.txt"
+    ],
+    "resources": {},
+    "isolated": false,
+    "log_path": "/home/dene/opt/modak/cpu_task_3.log"
+  },
+  "cpu_task_6": {
+    "status": "skipped",
+    "inputs": [],
+    "outputs": [
+      "/home/dene/opt/modak/cpu_task_6_output.txt"
+    ],
+    "resources": {},
+    "isolated": false,
+    "log_path": "/home/dene/opt/modak/cpu_task_6.log"
+  },
+  "cpu_task_5": {
+    "status": "skipped",
+    "inputs": [
+      "cpu_task_8"
+    ],
+    "outputs": [
+      "/home/dene/opt/modak/cpu_task_5_output.txt"
+    ],
+    "resources": {},
+    "isolated": false,
+    "log_path": "/home/dene/opt/modak/cpu_task_5.log"
+  },
+  "cpu_task_2": {
+    "status": "skipped",
+    "inputs": [
+      "cpu_task_5",
+      "cpu_task_4",
+      "cpu_task_3"
+    ],
+    "outputs": [
+      "/home/dene/opt/modak/cpu_task_2_output.txt"
+    ],
+    "resources": {},
+    "isolated": false,
+    "log_path": "/home/dene/opt/modak/cpu_task_2.log"
+  },
+  "cpu_task_8": {
+    "status": "skipped",
+    "inputs": [],
+    "outputs": [
+      "/home/dene/opt/modak/cpu_task_8_output.txt"
+    ],
+    "resources": {},
+    "isolated": false,
+    "log_path": "/home/dene/opt/modak/cpu_task_8.log"
+  },
+  "cpu_task_4": {
+    "status": "skipped",
+    "inputs": [
+      "cpu_task_8",
+      "cpu_task_6"
+    ],
+    "outputs": [
+      "/home/dene/opt/modak/cpu_task_4_output.txt"
+    ],
+    "resources": {},
+    "isolated": false,
+    "log_path": "/home/dene/opt/modak/cpu_task_4.log"
+  }
+}

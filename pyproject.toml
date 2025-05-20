@@ -1,0 +1,41 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "modak"
+description = "A simple, opinionated task manager"
+readme = "README.md"
+authors = [{ name = "Nathaniel Dene Hoffman", email = "dene@cmu.edu" }]
+requires-python = ">=3.12"
+keywords = ["task", "job", "scheduler", "monitor"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Rust",
+]
+dynamic = ["version"]
+dependencies = [
+  "click>=8.2.0",
+  "cloudpickle>=3.1.1",
+  "loguru>=0.7.3",
+  "numpy>=2.2.6",
+  "textdraw>=0.1.2",
+  "textual>=3.2.0",
+  "tzlocal>=5.3.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/denehoffman/modak"
+Repository = "https://github.com/denehoffman/modak"
+Issues = "https://github.com/denehoffman/modak/issues"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[project.scripts]
+modak = "modak.monitor:main"
