@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import abc
+from abc import ABC, abstractmethod
 import base64
 import uuid
 from pathlib import Path
@@ -11,10 +11,10 @@ import cloudpickle
 from .modak import TaskQueue
 
 if TYPE_CHECKING:
-    import loguru
+    from loguru import Logger
 
 
-class Task(abc.ABC):
+class Task(ABC):
     def __init__(
         self,
         name: str | None = None,
@@ -56,7 +56,7 @@ class Task(abc.ABC):
         )
 
     @property
-    def logger(self) -> loguru.Logger:
+    def logger(self) -> Logger:
         """
         Get the Loguru global logger instance.
 
@@ -146,7 +146,7 @@ class Task(abc.ABC):
 
         return self._log_path
 
-    @abc.abstractmethod
+    @abstractmethod
     def run(self) -> None:
         """
         Execute the task.

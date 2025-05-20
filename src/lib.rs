@@ -85,7 +85,7 @@ pub struct TaskQueue {
 #[pymethods]
 impl TaskQueue {
     #[new]
-    #[pyo3(signature = (workers = 4, resources = None, state_file_path = None))]
+    #[pyo3(signature = (*, workers = 4, resources = None, state_file_path = None))]
     fn new(
         workers: usize,
         resources: Option<HashMap<String, usize>>,
