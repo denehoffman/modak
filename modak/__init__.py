@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 import base64
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import cloudpickle
 
@@ -54,6 +54,10 @@ class Task(ABC):
         self._log_path = (log_directory or Path.cwd()) / (
             log_file or f"{self._name}.log"
         )
+
+    @override
+    def __hash__(self) -> int:
+        return hash(self._name)
 
     @property
     def logger(self) -> Logger:

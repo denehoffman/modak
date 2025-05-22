@@ -128,11 +128,11 @@ impl TaskQueue {
         let mut stack = tasks;
 
         while let Some(obj) = stack.pop() {
-            let ptr = obj.as_ptr();
-            if seen.contains(&ptr) {
+            let task_hash = obj.hash()?;
+            if seen.contains(&task_hash) {
                 continue;
             }
-            seen.insert(ptr);
+            seen.insert(task_hash);
             stack.extend(obj.getattr("inputs")?.extract::<Vec<Bound<'_, PyAny>>>()?);
             task_objs.push(obj);
         }
