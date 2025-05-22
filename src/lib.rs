@@ -139,7 +139,7 @@ impl TaskQueue {
 
         let mut obj_to_index = HashMap::new();
         for (i, obj) in task_objs.iter().enumerate() {
-            obj_to_index.insert(obj.as_ptr(), i);
+            obj_to_index.insert(obj.hash()?, i);
         }
 
         let mut graph: DiGraphMap<usize, ()> = DiGraphMap::new();
@@ -147,7 +147,7 @@ impl TaskQueue {
             graph.add_node(i);
             let inputs: Vec<Bound<'_, PyAny>> = obj.getattr("inputs")?.extract()?;
             for inp in inputs {
-                if let Some(&src) = obj_to_index.get(&inp.as_ptr()) {
+                if let Some(&src) = obj_to_index.get(&inp.hash()?) {
                     graph.add_edge(src, i, ());
                 }
             }
@@ -161,7 +161,7 @@ impl TaskQueue {
             let py_inputs: Vec<Bound<'_, PyAny>> = task_obj.getattr("inputs")?.extract()?;
             let mut inputs = Vec::new();
             for py_obj in py_inputs {
-                match obj_to_index.get(&py_obj.as_ptr()) {
+                match obj_to_index.get(&py_obj.hash()?) {
                     Some(&idx) => inputs.push(idx),
                     None => {
                         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
