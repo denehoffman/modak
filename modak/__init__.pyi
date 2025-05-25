@@ -42,6 +42,7 @@ class TaskQueue:
         workers: int = 4,
         resources: dict[str, int] | None = None,
         state_file_path: Path | None = None,
+        log_path: Path | None = None,
     ) -> None: ...
     def run(self, tasks: list[Task]) -> None: ...
 

@@ -1,16 +1,19 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
+use chrono::Utc;
 use petgraph::algo::toposort;
 use petgraph::graphmap::DiGraphMap;
 use pyo3::exceptions::PyIOError;
 use pyo3::prelude::*;
 use pyo3::PyAny;
 use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TaskStatus {
@@ -53,9 +56,11 @@ struct TaskState {
     resources: HashMap<String, usize>,
     isolated: bool,
     log_path: PathBuf,
+    start_time: String,
+    end_time: String,
 }
 
-type ModakState = HashMap<String, TaskState>;
+type ModakState = BTreeMap<String, TaskState>;
 
 /// A queue for Tasks.
 ///
@@ -67,6 +72,8 @@ type ModakState = HashMap<String, TaskState>;
 ///     The available resources for the entire queue.
 /// state_file_path : Path, default=".modak"
 ///     The location of the state file used to track tasks.
+/// log_path : Path, optional
+///     If provided, this file will act as a global log for all tasks.
 ///
 /// Returns
 /// -------
@@ -76,28 +83,33 @@ type ModakState = HashMap<String, TaskState>;
 pub struct TaskQueue {
     tasks: HashMap<usize, TaskMeta>,
     statuses: HashMap<usize, TaskStatus>,
+    timestamps: HashMap<usize, (String, String)>,
     max_workers: usize,
     available_resources: HashMap<String, usize>,
     running: HashMap<usize, std::thread::JoinHandle<i32>>,
     state_file_path: PathBuf,
+    log_file_path: Option<PathBuf>,
 }
 
 #[pymethods]
 impl TaskQueue {
     #[new]
-    #[pyo3(signature = (*, workers = 4, resources = None, state_file_path = None))]
+    #[pyo3(signature = (*, workers = 4, resources = None, state_file_path = None, log_path = None))]
     fn new(
         workers: usize,
         resources: Option<HashMap<String, usize>>,
         state_file_path: Option<PathBuf>,
+        log_path: Option<PathBuf>,
     ) -> Self {
         TaskQueue {
             tasks: HashMap::new(),
             statuses: HashMap::new(),
+            timestamps: HashMap::new(),
             max_workers: workers,
             available_resources: resources.unwrap_or_default(),
             running: HashMap::new(),
             state_file_path: state_file_path.unwrap_or(PathBuf::from(".modak")),
+            log_file_path: log_path,
         }
     }
 
@@ -190,6 +202,7 @@ impl TaskQueue {
             {
                 self.statuses.insert(id, TaskStatus::Failed);
             }
+            self.timestamps.insert(id, ("".to_string(), "".to_string()));
 
             self.tasks.insert(
                 id,
@@ -228,16 +241,45 @@ impl TaskQueue {
                                 }
                             }
                             let payload = task.payload.clone();
-                            let handle = thread::spawn(move || {
-                                let status = Command::new("python3")
-                                    .arg("-m")
-                                    .arg("modak")
-                                    .arg(&payload)
-                                    .status()
-                                    .unwrap();
-                                status.code().unwrap()
-                            });
+                            let handle = if let Some(log_path) = self.log_file_path.clone() {
+                                thread::spawn(move || {
+                                    let mut temp_file =
+                                        NamedTempFile::new().expect("Failed to create temp file");
+                                    temp_file
+                                        .write_all(payload.as_bytes())
+                                        .expect("Failed to write payload to temp file");
+                                    let path = temp_file.path().to_owned();
+                                    let status = Command::new("python3")
+                                        .arg("-m")
+                                        .arg("modak")
+                                        .arg(path)
+                                        .arg(log_path)
+                                        .status()
+                                        .unwrap();
+                                    drop(temp_file);
+                                    status.code().unwrap()
+                                })
+                            } else {
+                                thread::spawn(move || {
+                                    let mut temp_file =
+                                        NamedTempFile::new().expect("Failed to create temp file");
+                                    temp_file
+                                        .write_all(payload.as_bytes())
+                                        .expect("Failed to write payload to temp file");
+                                    let path = temp_file.path().to_owned();
+                                    let status = Command::new("python3")
+                                        .arg("-m")
+                                        .arg("modak")
+                                        .arg(path)
+                                        .status()
+                                        .unwrap();
+                                    drop(temp_file);
+                                    status.code().unwrap()
+                                })
+                            };
                             self.running.insert(*id, handle);
+                            self.timestamps
+                                .insert(*id, (Utc::now().to_rfc3339(), "".to_string()));
                         }
                     }
                     TaskStatus::Running => {
@@ -263,6 +305,9 @@ impl TaskQueue {
                                 }
                             }
                             self.running.remove(id);
+                            let (start, _) = self.timestamps.get(id).unwrap();
+                            self.timestamps
+                                .insert(*id, (start.to_string(), Utc::now().to_rfc3339()));
                         } else {
                             self.running.insert(*id, handle);
                         }
@@ -285,12 +330,7 @@ impl TaskQueue {
 
 impl TaskQueue {
     fn update_state_file(&self) -> PyResult<()> {
-        let mut all_state: ModakState =
-            if let Ok(data) = std::fs::read_to_string(&self.state_file_path) {
-                serde_json::from_str(&data).unwrap_or_default()
-            } else {
-                HashMap::new()
-            };
+        let mut all_state: ModakState = BTreeMap::new();
         for (id, task) in &self.tasks {
             let entry = TaskState {
                 status: self.statuses[id].to_string(),
@@ -303,6 +343,8 @@ impl TaskQueue {
                 resources: task.resources.clone(),
                 isolated: task.isolated,
                 log_path: task.log_path.clone(),
+                start_time: self.timestamps[id].0.clone(),
+                end_time: self.timestamps[id].1.clone(),
             };
             all_state.insert(task.name.clone(), entry);
         }

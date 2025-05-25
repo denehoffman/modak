@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import ClassVar
 
 import click
-import tzlocal
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -19,8 +18,6 @@ from textual.widgets import (
     Header,
     RichLog,
     Static,
-    TabbedContent,
-    TabPane,
 )
 
 from modak.graph import from_state
@@ -120,12 +117,10 @@ QueueDisplay > #log_container {
         def status_key(task):
             return STATUS_ORDER.get(self.state[task]["status"], 99)
 
-        local_tz = tzlocal.get_localzone()
-
         def fmt_time(ts):
             if not ts:
                 return ""
-            return datetime.fromtimestamp(ts, tz=local_tz).strftime("%H:%M:%S")
+            return datetime.fromisoformat(ts).astimezone().strftime("%H:%M:%S")
 
         self.rows = []
         table.clear()
@@ -197,8 +192,7 @@ class GraphDisplay(Static):
             self.update("")
 
 
-class StateApp(App):
-    active_tab: reactive[str] = reactive("monitor")
+class QueueApp(App):
     CSS = """
 #main {
     padding: 2;
@@ -213,33 +207,10 @@ QueueDisplay {
     width: 100%;
     content-align: center middle;
 }
-
-TabbedContent {
-    background: $background;
-    border: round $primary;
-    padding: 1;
-}
-
-Tab {
-    text-style: bold;
-}
-
-#info_text {
-    padding: 2;
-    border: round $secondary;
-    background: $panel;
-    color: $text;
-}
 """
 
     BINDINGS: ClassVar = [
         Binding("q", "quit", "Exit"),
-        Binding("m", "show_tab('monitor')", "Queue Monitor"),
-        Binding("1", "show_tab('monitor')", "Queue Monitor", show=False),
-        Binding("g", "show_tab('graph')", "Queue Graph"),
-        Binding("2", "show_tab('graph')", "Queue Graph", show=False),
-        Binding("i", "show_tab('info')", "Info"),
-        Binding("3", "show_tab('info')", "Info", show=False),
     ]
 
     def __init__(self, state_file: Path, *args, **kwargs):
@@ -248,40 +219,71 @@ Tab {
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with TabbedContent(initial="monitor"):
-            with TabPane("Monitor", id="monitor"):
-                yield Container(QueueDisplay(self.state_file), id="monitor_container")
-            with TabPane("Graph", id="graph"):
-                yield ScrollableContainer(
-                    GraphDisplay(self.state_file), id="graph_container"
-                )
-            with TabPane("Info", id="info"):
-                yield Static("Modak Monitor\n\nThis is an info panel.", id="info_text")
+        yield Container(QueueDisplay(self.state_file), id="monitor_container")
         yield Footer()
 
-    def action_show_tab(self, tab: str) -> None:
-        if tab == "monitor":
-            monitor = self.query_one(QueueDisplay)
-            monitor.query_one(DataTable).focus()
-        elif tab != self.active_tab:
-            monitor = self.query_one(QueueDisplay)
-            monitor.query_one(DataTable).blur()
-        self.active_tab = tab
-        self.get_child_by_type(TabbedContent).active = tab
-
     def on_mount(self) -> None:
-        self.title = "Modak Monitor"
+        self.title = "Modak Queue"
         monitor = self.query_one(QueueDisplay)
         monitor.query_one(DataTable).focus()
 
 
-@click.command()
+class GraphApp(App):
+    CSS = """
+#main {
+    padding: 2;
+    border: double $accent;
+    height: 100%;
+    width: 100%;
+    background: $background;
+}
+
+GraphDisplay {
+    height: 100%;
+    width: 100%;
+    content-align: center middle;
+}
+"""
+
+    BINDINGS: ClassVar = [
+        Binding("q", "quit", "Exit"),
+    ]
+
+    def __init__(self, state_file: Path, *args, **kwargs):
+        self.state_file = state_file
+        super().__init__(*args, **kwargs)
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield ScrollableContainer(GraphDisplay(self.state_file), id="graph_container")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "Modak Graph"
+
+
+@click.group()
+def cli():
+    pass
+
+
+@cli.command()
 @click.argument(
-    "cwd",
+    "state_file",
     type=click.Path(exists=True, file_okay=True),
     default=".modak",
     required=False,
 )
-def main(cwd: Path):
-    state_file = Path(cwd)
-    StateApp(state_file).run()
+def queue(state_file: Path):
+    QueueApp(Path(state_file)).run()
+
+
+@cli.command()
+@click.argument(
+    "state_file",
+    type=click.Path(exists=True, file_okay=True),
+    default=".modak",
+    required=False,
+)
+def graph(state_file: Path):
+    GraphApp(Path(state_file)).run()
