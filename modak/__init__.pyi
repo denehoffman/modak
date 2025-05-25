@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Sequence
 
 from loguru import Logger
 
@@ -44,6 +45,6 @@ class TaskQueue:
         state_file_path: Path | None = None,
         log_path: Path | None = None,
     ) -> None: ...
-    def run(self, tasks: list[Task]) -> None: ...
+    def run(self, tasks: Sequence[Task]) -> None: ...
 
 __all__ = ["Task", "TaskQueue"]

@@ -23,13 +23,13 @@ from textual.widgets import (
 from modak.graph import from_state
 
 STATUS_ORDER = {
-    "done": 0,
-    "skipped": 1,
-    "running": 2,
-    "queued": 3,
+    "running": 0,
+    "done": 1,
+    "queued": 2,
+    "failed": 3,
     "pending": 4,
-    "failed": 5,
-    "canceled": 6,
+    "canceled": 5,
+    "skipped": 6,
 }
 STATUS_COLOR = {
     "done": "green",
@@ -78,6 +78,7 @@ QueueDisplay > #log_container {
     def __init__(self, state_file: Path, *args, **kwargs):
         self.state_file = state_file
         self.state = {}
+        self.state_string: str = ""
         super().__init__(*args, **kwargs)
 
     def compose(self) -> ComposeResult:
@@ -109,10 +110,13 @@ QueueDisplay > #log_container {
         table = self.query_one(DataTable)
         current_cursor_coordinate = table.cursor_coordinate
         if self.state_file.exists():
-            with self.state_file.open() as f:
-                self.state = json.load(f)
-        else:
-            self.state = {}
+            new_state = self.state_file.read_text()
+            if new_state != self.state_string:
+                self.state_string = new_state
+                try:
+                    self.state = json.loads(self.state_string)
+                except:  # noqa: E722
+                    pass
 
         def status_key(task):
             return STATUS_ORDER.get(self.state[task]["status"], 99)
@@ -185,8 +189,11 @@ class GraphDisplay(Static):
             new_state = self.state_file.read_text()
             if new_state != self.state:
                 self.state = new_state
-                graph = from_state(json.loads(self.state))
-                self.update(graph)
+                try:
+                    graph = from_state(json.loads(self.state))
+                    self.update(graph)
+                except:  # noqa: E722
+                    pass
         else:
             self.state = ""
             self.update("")
