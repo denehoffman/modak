@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, FixedOffset, Utc};
 use petgraph::algo::toposort;
@@ -455,6 +455,7 @@ impl TaskQueue {
 
 const INFO_TEXT: [&str; 1] = ["(Esc/q) quit | (k/↑) move up | (j/↓) move down"];
 const ITEM_HEIGHT: usize = 1;
+const TICK_RATE: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
 enum LogState {
@@ -472,21 +473,22 @@ struct QueueApp {
     log_text: String,
     log_scroll_state: ScrollbarState,
     log_scroll: usize,
+    last_tick: Instant,
     exit: bool,
 }
 
 impl QueueApp {
     fn new(state_file_path: PathBuf) -> PyResult<Self> {
-        let items = Self::read_state(&state_file_path)?;
         Ok(Self {
             state: TableState::default().with_selected(0),
             state_file_path,
-            items,
+            items: Vec::default(),
             scroll_state: ScrollbarState::default(),
             log_state: LogState::default(),
             log_text: String::default(),
             log_scroll_state: ScrollbarState::default(),
             log_scroll: 0,
+            last_tick: Instant::now(),
             exit: false,
         })
     }
@@ -543,13 +545,18 @@ impl QueueApp {
     }
     fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         while !self.exit {
-            self.items = Self::read_state(&self.state_file_path)?;
+            if let Ok(updated_items) = Self::read_state(&self.state_file_path) {
+                self.items = updated_items;
+            }
             if let LogState::Open(path) = &self.log_state {
                 self.log_text =
                     std::fs::read_to_string(path).unwrap_or("Error reading log".to_string());
             }
             terminal.draw(|frame| self.draw(frame))?;
             self.handle_events()?;
+            if self.last_tick.elapsed() >= TICK_RATE {
+                self.last_tick = Instant::now();
+            }
         }
         Ok(())
     }
@@ -579,38 +586,42 @@ impl QueueApp {
         }
     }
     fn handle_events(&mut self) -> std::io::Result<()> {
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => self.exit = true,
-                    KeyCode::Char('j') | KeyCode::Down => match &self.log_state {
-                        LogState::Closed => self.next_row(),
-                        LogState::Open(_) => self.scroll_log_down(),
-                    },
-                    KeyCode::Char('k') | KeyCode::Up => match &self.log_state {
-                        LogState::Closed => self.previous_row(),
-                        LogState::Open(_) => self.scroll_log_up(),
-                    },
-                    KeyCode::Enter => match &self.log_state {
-                        LogState::Closed => {
-                            let log_path = self.items[self.state.selected().unwrap_or_default()]
+        let timeout = TICK_RATE.saturating_sub(self.last_tick.elapsed());
+        while event::poll(timeout)? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => self.exit = true,
+                        KeyCode::Char('j') | KeyCode::Down => match &self.log_state {
+                            LogState::Closed => self.next_row(),
+                            LogState::Open(_) => self.scroll_log_down(),
+                        },
+                        KeyCode::Char('k') | KeyCode::Up => match &self.log_state {
+                            LogState::Closed => self.previous_row(),
+                            LogState::Open(_) => self.scroll_log_up(),
+                        },
+                        KeyCode::Enter => match &self.log_state {
+                            LogState::Closed => {
+                                let log_path = self.items
+                                    [self.state.selected().unwrap_or_default()]
                                 .4
                                 .clone();
-                            self.log_state = LogState::Open(log_path);
-                        }
-                        LogState::Open(log_path) => {
-                            let new_log_path = self.items
-                                [self.state.selected().unwrap_or_default()]
-                            .4
-                            .clone();
-                            if *log_path != new_log_path {
-                                self.log_state = LogState::Open(new_log_path);
-                            } else {
-                                self.log_state = LogState::Closed;
+                                self.log_state = LogState::Open(log_path);
                             }
-                        }
-                    },
-                    _ => {}
+                            LogState::Open(log_path) => {
+                                let new_log_path = self.items
+                                    [self.state.selected().unwrap_or_default()]
+                                .4
+                                .clone();
+                                if *log_path != new_log_path {
+                                    self.log_state = LogState::Open(new_log_path);
+                                } else {
+                                    self.log_state = LogState::Closed;
+                                }
+                            }
+                        },
+                        _ => {}
+                    }
                 }
             }
         }
