@@ -20,6 +20,7 @@ from textual.widgets import (
     Static,
 )
 
+from modak import run_queue_wrapper
 from modak.graph import from_state
 
 STATUS_ORDER = {
@@ -281,8 +282,14 @@ def cli():
     default=".modak",
     required=False,
 )
-def queue(state_file: Path):
-    QueueApp(Path(state_file)).run()
+@click.option(
+    "-r", "--rust", is_flag=True, help="Run the queue app using the Rust-based TUI"
+)
+def queue(state_file: Path, rust: bool):
+    if rust:
+        run_queue_wrapper(state_file)
+    else:
+        QueueApp(Path(state_file)).run()
 
 
 @cli.command()

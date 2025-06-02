@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, override
 
 import cloudpickle
 
-from .modak import TaskQueue
+from .modak import TaskQueue, run_queue_wrapper
 
 if TYPE_CHECKING:
     from loguru import Logger
@@ -197,4 +197,4 @@ class Task(ABC):
         return cloudpickle.loads(raw_bytes)
 
 
-__all__ = ["Task", "TaskQueue"]
+__all__ = ["Task", "TaskQueue", "run_queue_wrapper"]

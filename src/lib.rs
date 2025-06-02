@@ -6,34 +6,63 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, FixedOffset, Utc};
 use petgraph::algo::toposort;
 use petgraph::graphmap::DiGraphMap;
 use pyo3::exceptions::PyIOError;
 use pyo3::prelude::*;
 use pyo3::PyAny;
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::style::{Color, Style, Stylize};
+use ratatui::text::Text;
+use ratatui::widgets::{
+    Block, BorderType, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Table, TableState,
+};
+use ratatui::{
+    crossterm::event::{self, Event, KeyCode, KeyEventKind},
+    DefaultTerminal, Frame,
+};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
+#[repr(u8)]
+#[serde(rename_all = "lowercase")]
 enum TaskStatus {
-    Pending,
-    Queued,
-    Running,
-    Done,
-    Failed,
-    Skipped,
+    Running = 0,
+    Failed = 1,
+    Queued = 2,
+    Pending = 3,
+    Done = 4,
+    Skipped = 5,
+}
+impl TaskStatus {
+    fn color(&self) -> Color {
+        match self {
+            TaskStatus::Running => catppuccin::PALETTE.mocha.colors.blue.into(),
+            TaskStatus::Failed => catppuccin::PALETTE.mocha.colors.red.into(),
+            TaskStatus::Queued => catppuccin::PALETTE.mocha.colors.mauve.into(),
+            TaskStatus::Pending => catppuccin::PALETTE.mocha.colors.peach.into(),
+            TaskStatus::Done => catppuccin::PALETTE.mocha.colors.green.into(),
+            TaskStatus::Skipped => catppuccin::PALETTE.mocha.colors.yellow.into(),
+        }
+    }
 }
 impl Display for TaskStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TaskStatus::Pending => write!(f, "pending"),
-            TaskStatus::Queued => write!(f, "queued"),
-            TaskStatus::Running => write!(f, "running"),
-            TaskStatus::Done => write!(f, "done"),
-            TaskStatus::Failed => write!(f, "failed"),
-            TaskStatus::Skipped => write!(f, "skipped"),
-        }
+        write!(
+            f,
+            "{}",
+            match self {
+                TaskStatus::Running => "running",
+                TaskStatus::Failed => "failed",
+                TaskStatus::Queued => "queued",
+                TaskStatus::Pending => "pending",
+                TaskStatus::Done => "done",
+                TaskStatus::Skipped => "skipped",
+            }
+        )
     }
 }
 
@@ -50,7 +79,7 @@ struct TaskMeta {
 
 #[derive(Serialize, Deserialize)]
 struct TaskState {
-    status: String,
+    status: TaskStatus,
     inputs: Vec<String>,
     outputs: Vec<PathBuf>,
     resources: HashMap<String, usize>,
@@ -60,7 +89,38 @@ struct TaskState {
     end_time: String,
 }
 
-type ModakState = BTreeMap<String, TaskState>;
+type TaskItem = (
+    String,
+    TaskStatus,
+    DateTime<FixedOffset>,
+    DateTime<FixedOffset>,
+    PathBuf,
+);
+
+#[derive(Serialize, Deserialize)]
+struct ModakState(BTreeMap<String, TaskState>);
+impl ModakState {
+    fn new() -> Self {
+        Self(BTreeMap::new())
+    }
+}
+impl From<ModakState> for Vec<TaskItem> {
+    fn from(state: ModakState) -> Self {
+        state
+            .0
+            .iter()
+            .map(|(name, taskstate)| {
+                (
+                    name.to_owned(),
+                    taskstate.status,
+                    DateTime::parse_from_rfc3339(&taskstate.start_time).unwrap_or_default(),
+                    DateTime::parse_from_rfc3339(&taskstate.end_time).unwrap_or_default(),
+                    taskstate.log_path.clone(),
+                )
+            })
+            .collect()
+    }
+}
 
 /// A queue for Tasks.
 ///
@@ -330,10 +390,10 @@ impl TaskQueue {
 
 impl TaskQueue {
     fn update_state_file(&self) -> PyResult<()> {
-        let mut all_state: ModakState = BTreeMap::new();
+        let mut all_state = ModakState::new();
         for (id, task) in &self.tasks {
             let entry = TaskState {
-                status: self.statuses[id].to_string(),
+                status: self.statuses[id],
                 inputs: task
                     .inputs
                     .iter()
@@ -346,7 +406,7 @@ impl TaskQueue {
                 start_time: self.timestamps[id].0.clone(),
                 end_time: self.timestamps[id].1.clone(),
             };
-            all_state.insert(task.name.clone(), entry);
+            all_state.0.insert(task.name.clone(), entry);
         }
         let json = serde_json::to_string_pretty(&all_state)
             .map_err(|e| PyIOError::new_err(e.to_string()))?;
@@ -393,8 +453,267 @@ impl TaskQueue {
     }
 }
 
+const INFO_TEXT: [&str; 1] = ["(Esc/q) quit | (k/↑) move up | (j/↓) move down"];
+const ITEM_HEIGHT: usize = 1;
+
+#[derive(Default)]
+enum LogState {
+    #[default]
+    Closed,
+    Open(PathBuf),
+}
+
+struct QueueApp {
+    state: TableState,
+    state_file_path: PathBuf,
+    items: Vec<TaskItem>,
+    scroll_state: ScrollbarState,
+    log_state: LogState,
+    log_text: String,
+    log_scroll_state: ScrollbarState,
+    log_scroll: usize,
+    exit: bool,
+}
+
+impl QueueApp {
+    fn new(state_file_path: PathBuf) -> PyResult<Self> {
+        let items = Self::read_state(&state_file_path)?;
+        Ok(Self {
+            state: TableState::default().with_selected(0),
+            state_file_path,
+            items,
+            scroll_state: ScrollbarState::default(),
+            log_state: LogState::default(),
+            log_text: String::default(),
+            log_scroll_state: ScrollbarState::default(),
+            log_scroll: 0,
+            exit: false,
+        })
+    }
+    fn read_state(state_file_path: &PathBuf) -> PyResult<Vec<TaskItem>> {
+        let content = std::fs::read_to_string(state_file_path).map_err(PyIOError::new_err)?;
+        let state: ModakState =
+            serde_json::from_str(&content).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        let mut state_vec: Vec<TaskItem> = state.into();
+        state_vec.sort_by(|a, b| (a.1, a.3).cmp(&(b.1, b.3)));
+        Ok(state_vec)
+    }
+
+    pub fn next_row(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i >= self.items.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.state.select(Some(i));
+        self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
+    }
+
+    pub fn scroll_log_down(&mut self) {
+        self.log_scroll = self.log_scroll.saturating_add(1);
+        let max_scroll = self.log_text.lines().count().saturating_sub(5);
+        if self.log_scroll > max_scroll {
+            self.log_scroll = max_scroll;
+        }
+        self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
+    }
+    pub fn scroll_log_up(&mut self) {
+        self.log_scroll = self.log_scroll.saturating_sub(1);
+        self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
+    }
+
+    pub fn previous_row(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.items.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.state.select(Some(i));
+        self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
+    }
+    fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        while !self.exit {
+            self.items = Self::read_state(&self.state_file_path)?;
+            if let LogState::Open(path) = &self.log_state {
+                self.log_text =
+                    std::fs::read_to_string(path).unwrap_or("Error reading log".to_string());
+            }
+            terminal.draw(|frame| self.draw(frame))?;
+            self.handle_events()?;
+        }
+        Ok(())
+    }
+
+    fn draw(&mut self, frame: &mut Frame) {
+        match &self.log_state {
+            LogState::Closed => {
+                let vertical = &Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]);
+                let rects = vertical.split(frame.area());
+                self.render_table(frame, rects[0]);
+                self.render_scrollbar(frame, rects[0]);
+                self.render_footer(frame, rects[1]);
+            }
+            LogState::Open(_) => {
+                let vertical = &Layout::vertical([
+                    Constraint::Fill(1),
+                    Constraint::Fill(1),
+                    Constraint::Length(3),
+                ]);
+                let rects = vertical.split(frame.area());
+                self.render_table(frame, rects[0]);
+                self.render_scrollbar(frame, rects[0]);
+                self.render_log(frame, rects[1]);
+                self.render_log_scrollbar(frame, rects[1]);
+                self.render_footer(frame, rects[2]);
+            }
+        }
+    }
+    fn handle_events(&mut self) -> std::io::Result<()> {
+        if let Event::Key(key) = event::read()? {
+            if key.kind == KeyEventKind::Press {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => self.exit = true,
+                    KeyCode::Char('j') | KeyCode::Down => match &self.log_state {
+                        LogState::Closed => self.next_row(),
+                        LogState::Open(_) => self.scroll_log_down(),
+                    },
+                    KeyCode::Char('k') | KeyCode::Up => match &self.log_state {
+                        LogState::Closed => self.previous_row(),
+                        LogState::Open(_) => self.scroll_log_up(),
+                    },
+                    KeyCode::Enter => match &self.log_state {
+                        LogState::Closed => {
+                            let log_path = self.items[self.state.selected().unwrap_or_default()]
+                                .4
+                                .clone();
+                            self.log_state = LogState::Open(log_path);
+                        }
+                        LogState::Open(log_path) => {
+                            let new_log_path = self.items
+                                [self.state.selected().unwrap_or_default()]
+                            .4
+                            .clone();
+                            if *log_path != new_log_path {
+                                self.log_state = LogState::Open(new_log_path);
+                            } else {
+                                self.log_state = LogState::Closed;
+                            }
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+    fn render_table(&mut self, frame: &mut Frame, area: Rect) {
+        let header = ["Task Name", "Status", "Start Time", "End Time"]
+            .into_iter()
+            .map(Cell::from)
+            .collect::<Row>()
+            .height(1);
+        let rows: Vec<Row> = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                Row::new([
+                    Cell::from(Text::from(item.0.clone())),
+                    Cell::from(
+                        Text::from(item.1.to_string()).style(Style::new().fg(item.1.color())),
+                    ),
+                    Cell::from(item.2.format("%H:%M:%S").to_string()),
+                    Cell::from(item.3.format("%H:%M:%S").to_string()),
+                ])
+                .style(Style::new().bg(if i % 2 == 0 {
+                    catppuccin::PALETTE.mocha.colors.surface0.into()
+                } else {
+                    catppuccin::PALETTE.mocha.colors.surface1.into()
+                }))
+                .height(1)
+            })
+            .collect();
+        let bar = " █ ";
+        let t = Table::new(
+            rows,
+            [
+                Constraint::Min(20),
+                Constraint::Length(9),
+                Constraint::Min(12),
+                Constraint::Min(12),
+            ],
+        )
+        .header(header)
+        .highlight_symbol(Text::from(vec![bar.into()]))
+        .bg(catppuccin::PALETTE.mocha.colors.base);
+        frame.render_stateful_widget(t, area, &mut self.state);
+    }
+    fn render_scrollbar(&mut self, frame: &mut Frame, area: Rect) {
+        frame.render_stateful_widget(
+            Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 1,
+            }),
+            &mut self.scroll_state,
+        );
+    }
+    fn render_log(&mut self, frame: &mut Frame, area: Rect) {
+        match &self.log_state {
+            LogState::Closed => {}
+            LogState::Open(_) => {
+                let paragraph =
+                    Paragraph::new(self.log_text.clone()).scroll((self.log_scroll as u16, 0));
+                frame.render_widget(paragraph, area);
+            }
+        }
+    }
+    fn render_log_scrollbar(&mut self, frame: &mut Frame, area: Rect) {
+        frame.render_stateful_widget(
+            Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 1,
+            }),
+            &mut self.log_scroll_state,
+        );
+    }
+
+    fn render_footer(&self, frame: &mut Frame, area: Rect) {
+        let info_footer = Paragraph::new(Text::from_iter(INFO_TEXT))
+            .centered()
+            .block(Block::bordered().border_type(BorderType::Double));
+        frame.render_widget(info_footer, area);
+    }
+}
+
+#[pyfunction]
+fn run_queue_wrapper(state_file_path: PathBuf) -> PyResult<()> {
+    let mut terminal = ratatui::init();
+    let result = QueueApp::new(state_file_path)?.run(&mut terminal);
+    ratatui::restore();
+    result.map_err(|e| PyIOError::new_err(e.to_string()))
+}
+
 #[pymodule]
 fn modak(m: Bound<PyModule>) -> PyResult<()> {
     m.add_class::<TaskQueue>()?;
+    m.add_function(wrap_pyfunction!(run_queue_wrapper, &m)?)?;
     Ok(())
 }
