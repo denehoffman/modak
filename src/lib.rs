@@ -20,7 +20,7 @@ use ratatui::widgets::{
     Table, TableState,
 };
 use ratatui::{
-    crossterm::event::{self, Event, KeyCode, KeyEventKind},
+    crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     DefaultTerminal, Frame,
 };
 use serde::{Deserialize, Serialize};
@@ -453,8 +453,10 @@ impl TaskQueue {
     }
 }
 
-const INFO_TEXT: [&str; 1] = ["(Esc/q) quit | (k/↑) move up | (j/↓) move down"];
-const ITEM_HEIGHT: usize = 1;
+const INFO_TEXT: [&str; 2] = [
+    "(Esc/q) quit | (k/↑) move up | (j/↓) move down",
+    "(Enter) toggle log | (shift+k/↑) scroll to top | (shift+j/↓) scroll to bottom",
+];
 
 #[derive(Default)]
 enum LogState {
@@ -472,6 +474,8 @@ struct QueueApp {
     log_text: String,
     log_scroll_state: ScrollbarState,
     log_scroll: usize,
+    log_window_lines: usize,
+    follow_log: bool,
     exit: bool,
 }
 
@@ -485,7 +489,9 @@ impl QueueApp {
             log_state: LogState::default(),
             log_text: String::default(),
             log_scroll_state: ScrollbarState::default(),
+            log_window_lines: 0,
             log_scroll: 0,
+            follow_log: true,
             exit: false,
         })
     }
@@ -510,22 +516,12 @@ impl QueueApp {
             None => 0,
         };
         self.state.select(Some(i));
-        self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
+        self.scroll_state = self.scroll_state.position(i);
     }
-
-    pub fn scroll_log_down(&mut self) {
-        self.log_scroll = self.log_scroll.saturating_add(1);
-        let max_scroll = self.log_text.lines().count().saturating_sub(5);
-        if self.log_scroll > max_scroll {
-            self.log_scroll = max_scroll;
-        }
-        self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
+    pub fn bottom_row(&mut self) {
+        self.state.select(Some(self.items.len() - 1));
+        self.scroll_state = self.scroll_state.position(self.items.len() - 1);
     }
-    pub fn scroll_log_up(&mut self) {
-        self.log_scroll = self.log_scroll.saturating_sub(1);
-        self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
-    }
-
     pub fn previous_row(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {
@@ -538,8 +534,47 @@ impl QueueApp {
             None => 0,
         };
         self.state.select(Some(i));
-        self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
+        self.scroll_state = self.scroll_state.position(i);
     }
+    pub fn top_row(&mut self) {
+        self.state.select(Some(0));
+        self.scroll_state = self.scroll_state.position(0);
+    }
+
+    pub fn scroll_log_down(&mut self) {
+        self.log_scroll = self.log_scroll.saturating_add(1);
+        let max_scroll = self
+            .log_text
+            .lines()
+            .count()
+            .saturating_sub(self.log_window_lines);
+        if self.log_scroll > max_scroll {
+            self.log_scroll = max_scroll;
+            self.follow_log = true;
+        }
+        self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
+    }
+    pub fn scroll_log_bottom(&mut self) {
+        let max_scroll = self
+            .log_text
+            .lines()
+            .count()
+            .saturating_sub(self.log_window_lines);
+        self.log_scroll = max_scroll;
+        self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
+        self.follow_log = true;
+    }
+    pub fn scroll_log_up(&mut self) {
+        self.log_scroll = self.log_scroll.saturating_sub(1);
+        self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
+        self.follow_log = false;
+    }
+    pub fn scroll_log_top(&mut self) {
+        self.log_scroll = 0;
+        self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
+        self.follow_log = false;
+    }
+
     fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         while !self.exit {
             if let Ok(updated_items) = Self::read_state(&self.state_file_path) {
@@ -556,9 +591,13 @@ impl QueueApp {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
+        self.scroll_state = self.scroll_state.content_length(self.items.len());
+        self.log_scroll_state = self
+            .log_scroll_state
+            .content_length(self.log_text.lines().count());
         match &self.log_state {
             LogState::Closed => {
-                let vertical = &Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]);
+                let vertical = &Layout::vertical([Constraint::Fill(1), Constraint::Length(4)]);
                 let rects = vertical.split(frame.area());
                 self.render_table(frame, rects[0]);
                 self.render_scrollbar(frame, rects[0]);
@@ -568,9 +607,10 @@ impl QueueApp {
                 let vertical = &Layout::vertical([
                     Constraint::Fill(1),
                     Constraint::Fill(1),
-                    Constraint::Length(3),
+                    Constraint::Length(4),
                 ]);
                 let rects = vertical.split(frame.area());
+                self.log_window_lines = rects[1].height as usize;
                 self.render_table(frame, rects[0]);
                 self.render_scrollbar(frame, rects[0]);
                 self.render_log(frame, rects[1]);
@@ -582,8 +622,17 @@ impl QueueApp {
     fn handle_events(&mut self) -> std::io::Result<()> {
         if let Event::Key(key) = event::read()? {
             if key.kind == KeyEventKind::Press {
+                let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => self.exit = true,
+                    KeyCode::Char('J') | KeyCode::Down if shift_pressed => match &self.log_state {
+                        LogState::Closed => self.bottom_row(),
+                        LogState::Open(_) => self.scroll_log_bottom(),
+                    },
+                    KeyCode::Char('K') | KeyCode::Up if shift_pressed => match &self.log_state {
+                        LogState::Closed => self.top_row(),
+                        LogState::Open(_) => self.scroll_log_top(),
+                    },
                     KeyCode::Char('j') | KeyCode::Down => match &self.log_state {
                         LogState::Closed => self.next_row(),
                         LogState::Open(_) => self.scroll_log_down(),
@@ -676,6 +725,14 @@ impl QueueApp {
         match &self.log_state {
             LogState::Closed => {}
             LogState::Open(_) => {
+                if self.follow_log {
+                    self.log_scroll = self
+                        .log_text
+                        .lines()
+                        .count()
+                        .saturating_sub(self.log_window_lines);
+                    self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
+                }
                 let paragraph =
                     Paragraph::new(self.log_text.clone()).scroll((self.log_scroll as u16, 0));
                 frame.render_widget(paragraph, area);
