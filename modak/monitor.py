@@ -2,78 +2,70 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import ClassVar
 
 import click
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.containers import ScrollableContainer
-from textual.widgets import (
-    Footer,
-    Header,
-    Static,
-)
 
 from modak import run_queue_wrapper
 from modak.graph import from_state
 
-
-class GraphDisplay(Static):
-    def __init__(self, state_file: Path, *args, **kwargs):
-        self.state_file = state_file
-        self.state: str = ""
-        super().__init__(*args, **kwargs)
-
-    def on_mount(self) -> None:
-        self.set_interval(1.0, self.refresh_graph)
-
-    def refresh_graph(self) -> None:
-        if self.state_file.exists():
-            new_state = self.state_file.read_text()
-            if new_state != self.state:
-                self.state = new_state
-                try:
-                    graph = from_state(json.loads(self.state))
-                    self.update(graph)
-                except:  # noqa: E722
-                    pass
-        else:
-            self.state = ""
-            self.update("")
+from textual.app import App, ComposeResult
+from textual.widgets import Static
+from textual.containers import ScrollableContainer
+from rich.text import Text
 
 
-class GraphApp(App):
+def queue_graph(
+    state_file: Path | str = Path(".modak"), width: int = 80, height: int = 24
+) -> Text:
+    try:
+        state_file = Path(state_file)
+        if state_file.exists():
+            state = state_file.read_text()
+            return Text.from_ansi(from_state(json.loads(state), width, height))
+    except:
+        return Text.from_markup("[red]Error[/]")
+
+
+class RenderApp(App):
     CSS = """
-#main {
-    padding: 2;
-    border: double $accent;
-    height: 100%;
-    width: 100%;
-    background: $background;
-}
+    #scroller {
+        overflow-x: auto;
+        overflow-y: auto;
+        align: center middle;
+    }
 
-GraphDisplay {
-    height: 100%;
-    width: 100%;
-    content-align: center middle;
-}
-"""
+    #output {
+        width: auto;
+        min-width: 100%;
+        text-align: center
+    }
+    """
 
-    BINDINGS: ClassVar = [
-        Binding("q", "quit", "Exit"),
-    ]
-
-    def __init__(self, state_file: Path, *args, **kwargs):
-        self.state_file = state_file
+    def __init__(self, state_file: Path | str, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.state_file = Path(state_file)
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        yield ScrollableContainer(GraphDisplay(self.state_file), id="graph_container")
-        yield Footer()
+        with ScrollableContainer(id="scroller"):
+            yield Static(queue_graph(self.state_file), id="output")
 
     def on_mount(self) -> None:
-        self.title = "Modak Graph"
+        self.set_interval(1.0, self.update_view)
+
+    def update_view(self) -> None:
+        container = self.query_one("#scroller", ScrollableContainer)
+        visible_width, visible_height = container.size
+        virtual_width, virtual_height = container.virtual_size
+        horizontal_scrollbar_visible = virtual_width > visible_width
+        vertical_scrollbar_visible = virtual_height > visible_height
+        stat = self.query_one("#output", Static)
+        stat.update(
+            queue_graph(
+                self.state_file,
+                visible_width - 2 * int(vertical_scrollbar_visible),
+                visible_height - 2 * int(horizontal_scrollbar_visible),
+            )
+        )
 
 
 @click.group()
@@ -100,4 +92,9 @@ def queue(state_file: Path):
     required=False,
 )
 def graph(state_file: Path):
-    GraphApp(Path(state_file)).run()
+    RenderApp(state_file).run()
+    # with Live(queue_graph(state_file), auto_refresh=False) as live:
+    #     time.sleep(0.5)
+    #     text = queue_graph(state_file)
+    #     live.update(text)
+    #     live.refresh()

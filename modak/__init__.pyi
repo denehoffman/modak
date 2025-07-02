@@ -4,6 +4,7 @@ from typing import Sequence
 
 from loguru import Logger
 
+
 class Task(ABC):
     def __init__(
         self,
@@ -36,6 +37,7 @@ class Task(ABC):
     @classmethod
     def deserialize(cls, data: str) -> Task: ...
 
+
 class TaskQueue:
     def __init__(
         self,
@@ -47,6 +49,8 @@ class TaskQueue:
     ) -> None: ...
     def run(self, tasks: Sequence[Task]) -> None: ...
 
+
 def run_queue_wrapper(state_file_path: Path) -> None: ...
+
 
 __all__ = ["Task", "TaskQueue", "run_queue_wrapper"]

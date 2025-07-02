@@ -10,6 +10,7 @@ use chrono::{DateTime, FixedOffset, Utc};
 use petgraph::algo::toposort;
 use petgraph::graphmap::DiGraphMap;
 use pyo3::exceptions::PyIOError;
+use pyo3::ffi::c_str;
 use pyo3::prelude::*;
 use pyo3::PyAny;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
