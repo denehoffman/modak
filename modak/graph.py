@@ -5,7 +5,17 @@ from itertools import chain, permutations
 from typing import ClassVar, Self
 
 import numpy as np
-from textdraw import BoundingBox, Box, Pixel, PixelGroup, Point, multipath, render
+from textdraw import (
+    BoundingBox,
+    Box,
+    Pixel,
+    PixelGroup,
+    Point,
+    Style,
+    TextPath,
+    multipath,
+    render,
+)
 
 
 class TaskLike:
@@ -196,18 +206,33 @@ class TaskBox:
             barriers.append(barrier.duplicate(self.xy_inputs[0] - Point(1, 0)))
             barriers.append(barrier.duplicate(self.xy_inputs[-1] + Point(1, 0)))
         self.barriers = PixelGroup(barriers)
+        self.paths: list[TextPath] = []
+
+    def update_status(self, new_status: str) -> None:
+        self.task_status = new_status
+        self.box.border_style = Style(TaskBox.STYLES[new_status] + "on black")
+        for path in self.paths:
+            path.style = Style(TaskBox.STYLES[new_status] + "on black")
+            path.line_style = TaskBox.BORDER_TYPES[new_status]
 
     def duplicate_shifted(self, delta: Point) -> Self:
-        return TaskBox(
+        tb = TaskBox(
             self.task_name,
             self.task_status,
             self.num_task_inputs,
             self.position + delta,
             has_output=self.has_output,
         )
+        tb.paths = [p.duplicate_shifted(delta) for p in self.paths]
+        return tb
+
+    def all_objects(self) -> list[Box | TextPath]:
+        return [self.box, *self.paths]
 
 
-def render_task_layers(layers: list[list[TaskLike]], width: int, height: int) -> str:
+def render_task_layers(
+    layers: list[list[TaskLike]], width: int, height: int
+) -> dict[str, TaskBox]:
     task_boxes: dict[str, TaskBox] = {}
     task_dict: dict[str, TaskLike] = {
         tasklike.task_name: tasklike
@@ -243,12 +268,10 @@ def render_task_layers(layers: list[list[TaskLike]], width: int, height: int) ->
             x_pos += box.box.bbox.width + x_spacing
             taskboxes_layer.append(box)
         bbox = BoundingBox.wrap([tb.box for tb in taskboxes_layer])
-        taskboxes_layer_centered = [
-            tb.duplicate_shifted(Point(-bbox.bottom_center.x, 0))
-            for tb in taskboxes_layer
-        ]
-        for task_box in taskboxes_layer_centered:
-            task_boxes[task_box.task_name] = task_box
+        for taskbox in taskboxes_layer:
+            task_boxes[taskbox.task_name] = taskbox.duplicate_shifted(
+                Point(-bbox.bottom_center.x, 0)
+            )
         y_pos -= y_spacing
 
     fanouts: defaultdict[str, list[tuple[Point, Point]]] = defaultdict(list)
@@ -272,7 +295,6 @@ def render_task_layers(layers: list[list[TaskLike]], width: int, height: int) ->
                 fanouts[input_tasklike.task_name].append((start, end))
                 targets[input_tasklike.task_name].append(tasklike.task_name)
     bbox_all_boxes = BoundingBox.wrap([tb.box for tb in task_boxes.values()])
-    all_boxes = [tb.box for tb in task_boxes.values()]
     all_paths = []
     for task_name, pairs in fanouts.items():
         starts, ends = zip(*pairs)
@@ -298,26 +320,57 @@ def render_task_layers(layers: list[list[TaskLike]], width: int, height: int) ->
                 bbox_all_boxes.left - 5,
             ),
         )
+        task_boxes[task_name].paths = path_objs
         all_paths.extend(path_objs)
-    all_objects = [*all_paths, *all_boxes]
-    bbox_all_objects = BoundingBox.wrap(all_objects)
-    center_all_objects = bbox_all_objects.center
-    origin = center_all_objects - Point(width // 2, height // 2)
-    full_box = Box(
-        position=origin,
-        width=max(width, bbox_all_objects.width),
-        height=max(height, bbox_all_objects.height),
-        style="on black",
-        border_style="on black",
-        line_style=None,
-    )
-    return render([full_box, *all_paths, *all_boxes], default_style="on black")
+    return task_boxes
 
 
-def from_state(state: dict[str, dict], width: int, height: int) -> str:
-    tasklikes: list[TaskLike] = []
-    for task, entry in state.items():
-        tasklikes.append(TaskLike(task, entry["inputs"], entry["status"]))
-    layers = layer_tasks(tasklikes)
-    minimize_all_crossings(layers)
-    return render_task_layers(layers, width, height)
+class GraphRender:
+    def __init__(self, state: dict[str, dict], width: int, height: int):
+        self.tasklikes = [
+            TaskLike(t, e["inputs"], e["status"]) for t, e in state.items()
+        ]
+        layers = layer_tasks(self.tasklikes)
+        minimize_all_crossings(layers)
+        self.width = width
+        self.height = height
+        self.task_boxes = render_task_layers(layers, width, height)
+        self.full_box = self.get_box()
+
+    def get_box(self) -> Box:
+        all_objects = [
+            obj for tb in self.task_boxes.values() for obj in tb.all_objects()
+        ]
+        bbox_all_objects = BoundingBox.wrap(all_objects)
+        center_all_objects = bbox_all_objects.center
+        origin = center_all_objects - Point(self.width // 2, self.height // 2)
+        return Box(
+            position=origin,
+            width=max(self.width, bbox_all_objects.width),
+            height=max(self.height, bbox_all_objects.height),
+            style="on black",
+            border_style="on black",
+            line_style=None,
+        )
+
+    def update(self, state: dict[str, dict], width: int, height: int):
+        new_tasklikes = [
+            TaskLike(t, e["inputs"], e["status"]) for t, e in state.items()
+        ]
+        if width != self.width or height != self.height:
+            self.width = width
+            self.height = height
+            self.full_box = self.get_box()
+
+        for tasklike in new_tasklikes:
+            if self.task_boxes[tasklike.task_name].task_status != tasklike.task_status:
+                self.task_boxes[tasklike.task_name].update_status(tasklike.task_status)
+
+    def render(self) -> str:
+        return render(
+            [
+                self.full_box,
+                *[obj for tb in self.task_boxes.values() for obj in tb.all_objects()],
+            ],
+            default_style="on black",
+        )
