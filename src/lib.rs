@@ -747,9 +747,9 @@ struct QueueApp {
 }
 
 impl QueueApp {
-    fn new(state_file_path: Option<PathBuf>) -> PyResult<Self> {
+    fn new(state_file_path: Option<PathBuf>, project: Option<String>) -> PyResult<Self> {
         let database = Database::new(state_file_path)?;
-        let current_project = database.list_projects()?[0].clone();
+        let current_project = project.unwrap_or(database.list_projects()?[0].clone());
         Ok(Self {
             state: TableState::default().with_selected(0),
             database,
@@ -895,9 +895,7 @@ impl QueueApp {
                 self.log_window_lines = rects[1].height as usize;
                 self.render_header(frame, rects[0]);
                 self.render_table(frame, rects[1]);
-                self.render_scrollbar(frame, rects[1]);
                 self.render_log(frame, rects[2]);
-                self.render_log_scrollbar(frame, rects[2]);
                 self.render_footer(frame, rects[3]);
             }
         }
@@ -1007,6 +1005,7 @@ impl QueueApp {
         .highlight_symbol(Text::from(vec![bar.into()]))
         .bg(catppuccin::PALETTE.mocha.colors.base);
         frame.render_stateful_widget(t, area, &mut self.state);
+        self.render_scrollbar(frame, area);
     }
     fn render_scrollbar(&mut self, frame: &mut Frame, area: Rect) {
         frame.render_stateful_widget(
@@ -1027,7 +1026,7 @@ impl QueueApp {
             LogState::Open(_) => {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Min(1)])
+                    .constraints([Constraint::Length(2), Constraint::Min(1)])
                     .split(area);
                 if self.follow_log {
                     self.log_scroll = self
@@ -1056,6 +1055,7 @@ impl QueueApp {
                     .scroll((self.log_scroll as u16, 0));
                 frame.render_widget(header, chunks[0]);
                 frame.render_widget(log, chunks[1]);
+                self.render_log_scrollbar(frame, chunks[1]);
             }
         }
     }
@@ -1099,9 +1099,9 @@ impl QueueApp {
 }
 
 #[pyfunction]
-fn run_queue_wrapper(state_file_path: Option<PathBuf>) -> PyResult<()> {
+fn run_queue_wrapper(state_file_path: Option<PathBuf>, project: Option<String>) -> PyResult<()> {
     let mut terminal = ratatui::init();
-    let result = QueueApp::new(state_file_path)?.run(&mut terminal);
+    let result = QueueApp::new(state_file_path, project)?.run(&mut terminal);
     ratatui::restore();
     result.map_err(|e| PyIOError::new_err(e.to_string()))
 }
@@ -1126,11 +1126,18 @@ fn get_project_state(
         .collect::<PyResult<Vec<Bound<PyDict>>>>()
 }
 
+#[pyfunction]
+fn reset_project(state_file_path: Option<PathBuf>, project: String) -> PyResult<()> {
+    let database = Database::new(state_file_path)?;
+    database.reset_project(&project)
+}
+
 #[pymodule]
 fn modak(m: Bound<PyModule>) -> PyResult<()> {
     m.add_class::<TaskQueue>()?;
     m.add_function(wrap_pyfunction!(run_queue_wrapper, &m)?)?;
     m.add_function(wrap_pyfunction!(get_projects, &m)?)?;
     m.add_function(wrap_pyfunction!(get_project_state, &m)?)?;
+    m.add_function(wrap_pyfunction!(reset_project, &m)?)?;
     Ok(())
 }

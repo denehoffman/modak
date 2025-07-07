@@ -50,11 +50,12 @@ class TaskQueue:
     def run(self, tasks: Sequence[Task]) -> None: ...
 
 
-def run_queue_wrapper(state_file_path: Path) -> None: ...
+def run_queue_wrapper(state_file_path: Path, project: str | None) -> None: ...
 def get_projects(state_file_path: Path) -> list[str]: ...
 def get_project_state(
     state_file_path: Path, project: str
 ) -> list[dict[str, object]]: ...
+def reset_project(state_file_path: Path, project: str): ...
 
 
 __all__ = [
@@ -63,4 +64,5 @@ __all__ = [
     "run_queue_wrapper",
     "get_projects",
     "get_project_state",
+    "reset_project",
 ]
