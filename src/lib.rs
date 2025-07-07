@@ -3,6 +3,7 @@ use std::fmt::Display;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -12,8 +13,9 @@ use parking_lot::Mutex;
 use petgraph::algo::toposort;
 use petgraph::graphmap::DiGraphMap;
 use pyo3::exceptions::{PyIOError, PyValueError};
-use pyo3::prelude::*;
+use pyo3::types::{IntoPyDict, PyDict};
 use pyo3::PyAny;
+use pyo3::{prelude::*, IntoPyObjectExt};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Text;
@@ -26,12 +28,10 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 use rusqlite::{Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
-#[serde(rename_all = "lowercase")]
 enum TaskStatus {
     Running = 0,
     Failed = 1,
@@ -68,8 +68,23 @@ impl Display for TaskStatus {
         )
     }
 }
+impl FromStr for TaskStatus {
+    type Err = PyErr;
 
-#[derive(Clone)]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "running" => Ok(TaskStatus::Running),
+            "failed" => Ok(TaskStatus::Failed),
+            "queued" => Ok(TaskStatus::Queued),
+            "pending" => Ok(TaskStatus::Pending),
+            "done" => Ok(TaskStatus::Done),
+            "skipped" => Ok(TaskStatus::Skipped),
+            _ => Err(PyValueError::new_err("Invalid task status")),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 struct TaskRecord {
     name: String,
     status: TaskStatus,
@@ -98,12 +113,25 @@ impl TaskRecord {
         out.end_time = end_time;
         out
     }
+    fn as_pydict<'a>(&self, py: Python<'a>) -> PyResult<Bound<'a, PyDict>> {
+        let key_vals: &[(&str, PyObject)] = &[
+            ("name", self.name.clone().into_py_any(py)?),
+            ("status", self.status.to_string().into_py_any(py)?),
+            ("inputs", self.inputs.clone().into_py_any(py)?),
+            ("outputs", self.outputs.clone().into_py_any(py)?),
+            ("resources", self.resources.clone().into_py_any(py)?),
+            ("isolated", self.isolated.into_py_any(py)?),
+            ("log_path", self.log_path.clone().into_py_any(py)?),
+            ("start_time", self.start_time.to_string().into_py_any(py)?),
+            ("end_time", self.end_time.to_string().into_py_any(py)?),
+            ("payload", self.payload.clone().into_py_any(py)?),
+        ];
+        key_vals.into_py_dict(py)
+    }
 }
-
 struct Database {
     conn: Arc<Mutex<Connection>>,
 }
-
 impl Database {
     pub fn new(path: Option<PathBuf>) -> PyResult<Self> {
         let db_path = match path {
@@ -198,7 +226,7 @@ impl Database {
                 start_time = excluded.start_time,
                 end_time = excluded.end_time,
                 resources = excluded.resources,
-                isolated = excluded.isolated
+                isolated = excluded.isolated,
                 payload = excluded.payload
             ",
             rusqlite::params![
@@ -248,7 +276,7 @@ impl Database {
                     inputs: serde_json::from_str(&row.get::<_, String>(1)?).unwrap(),
                     outputs: serde_json::from_str(&row.get::<_, String>(2)?).unwrap(),
                     log_path: PathBuf::from(row.get::<_, String>(3)?),
-                    status: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
+                    status: row.get::<_, String>(4)?.parse().unwrap(),
                     start_time: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?).unwrap(),
                     end_time: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?).unwrap(),
                     resources: serde_json::from_str(&row.get::<_, String>(7)?).unwrap(),
@@ -320,7 +348,7 @@ impl Database {
                         inputs: serde_json::from_str(&row.get::<_, String>(1)?).unwrap(),
                         outputs: serde_json::from_str(&row.get::<_, String>(2)?).unwrap(),
                         log_path: PathBuf::from(row.get::<_, String>(3)?),
-                        status: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
+                        status: row.get::<_, String>(4)?.parse().unwrap(),
                         start_time: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
                             .unwrap(),
                         end_time: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?).unwrap(),
@@ -515,10 +543,10 @@ impl TaskQueue {
             self.database.upsert_task(&self.project, &record)?;
         }
         // Now that we have filled the database with the current state, we can run the tasks
-        // First, we get the current state of all tasks in the project:
-        let tasks = self.database.get_project_state(&self.project)?;
         loop {
             thread::sleep(Duration::from_millis(50));
+            // First, we get the current state of all tasks in the project:
+            let tasks = self.database.get_project_state(&self.project)?;
             // If all done, skipped, or failed, stop looping
             if tasks.iter().all(|t| {
                 matches!(
@@ -1031,9 +1059,31 @@ fn run_queue_wrapper(state_file_path: Option<PathBuf>) -> PyResult<()> {
     result.map_err(|e| PyIOError::new_err(e.to_string()))
 }
 
+#[pyfunction]
+fn get_projects(state_file_path: Option<PathBuf>) -> PyResult<Vec<String>> {
+    let database = Database::new(state_file_path)?;
+    database.list_projects()
+}
+
+#[pyfunction]
+fn get_project_state(
+    py: Python,
+    state_file_path: Option<PathBuf>,
+    project: String,
+) -> PyResult<Vec<Bound<PyDict>>> {
+    let database = Database::new(state_file_path)?;
+    database
+        .get_project_state(&project)?
+        .into_iter()
+        .map(|state| state.as_pydict(py))
+        .collect::<PyResult<Vec<Bound<PyDict>>>>()
+}
+
 #[pymodule]
 fn modak(m: Bound<PyModule>) -> PyResult<()> {
     m.add_class::<TaskQueue>()?;
     m.add_function(wrap_pyfunction!(run_queue_wrapper, &m)?)?;
+    m.add_function(wrap_pyfunction!(get_projects, &m)?)?;
+    m.add_function(wrap_pyfunction!(get_project_state, &m)?)?;
     Ok(())
 }

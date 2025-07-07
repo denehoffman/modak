@@ -51,6 +51,16 @@ class TaskQueue:
 
 
 def run_queue_wrapper(state_file_path: Path) -> None: ...
+def get_projects(state_file_path: Path) -> list[str]: ...
+def get_project_state(
+    state_file_path: Path, project: str
+) -> list[dict[str, object]]: ...
 
 
-__all__ = ["Task", "TaskQueue", "run_queue_wrapper"]
+__all__ = [
+    "Task",
+    "TaskQueue",
+    "run_queue_wrapper",
+    "get_projects",
+    "get_project_state",
+]
