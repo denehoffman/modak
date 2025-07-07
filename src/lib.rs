@@ -1026,7 +1026,7 @@ impl QueueApp {
             LogState::Open(_) => {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Min(1)])
+                    .constraints([Constraint::Length(2), Constraint::Min(1)])
                     .split(area);
                 if self.follow_log {
                     self.log_scroll = self
