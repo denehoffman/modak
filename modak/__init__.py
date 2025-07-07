@@ -61,8 +61,7 @@ class Task(ABC):
         self._log_path = (log_directory or Path.cwd()) / (
             log_file or f"{self._name}.log"
         )
-        if self._log_path.exists() and log_behavior == "overwrite":
-            self._log_path.unlink()
+        self._log_behavior = log_behavior
 
     @override
     def __hash__(self) -> int:
@@ -158,6 +157,18 @@ class Task(ABC):
         """
 
         return self._log_path
+
+    @property
+    def log_behavior(self) -> Literal["overwrite", "append"]:
+        """
+        Get the logging behavior for this task.
+
+        Returns
+        -------
+        str
+            Logging behavior ("overwrite" or "append").
+        """
+        return self._log_behavior
 
     @abstractmethod
     def run(self) -> None:

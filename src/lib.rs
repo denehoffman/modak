@@ -526,6 +526,10 @@ impl TaskQueue {
             {
                 status = TaskStatus::Failed;
             }
+            let log_behavior: String = task_obj.getattr("log_behavior")?.extract()?;
+            if log_behavior == "overwrite" && log_path.exists() {
+                std::fs::remove_file(&log_path).map_err(|e| PyIOError::new_err(e.to_string()))?;
+            }
             let start_time = DateTime::default();
             let end_time = DateTime::default();
             let record = TaskRecord {
