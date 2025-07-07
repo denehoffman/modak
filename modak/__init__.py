@@ -4,7 +4,7 @@ import base64
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Literal, override
 
 import cloudpickle
 
@@ -31,6 +31,7 @@ class Task(ABC):
         isolated: bool = False,
         log_file: Path | None = None,
         log_directory: Path | None = None,
+        log_behavior: Literal["overwrite", "append"] = "overwrite",
     ):
         """
         Initialize a Task.
@@ -60,6 +61,8 @@ class Task(ABC):
         self._log_path = (log_directory or Path.cwd()) / (
             log_file or f"{self._name}.log"
         )
+        if self._log_path.exists() and log_behavior == "overwrite":
+            self._log_path.unlink()
 
     @override
     def __hash__(self) -> int:
