@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -9,7 +8,13 @@ from typing import TYPE_CHECKING, override
 
 import cloudpickle
 
-from .modak import TaskQueue, run_queue_wrapper, get_projects, get_project_state
+from .modak import (
+    TaskQueue,
+    get_project_state,
+    get_projects,
+    reset_project,
+    run_queue_wrapper,
+)
 
 if TYPE_CHECKING:
     from loguru import Logger
@@ -204,4 +209,5 @@ __all__ = [
     "run_queue_wrapper",
     "get_projects",
     "get_project_state",
+    "reset_project",
 ]
