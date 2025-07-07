@@ -720,7 +720,7 @@ impl TaskQueue {
 }
 
 const INFO_TEXT: [&str; 2] = [
-    "(Esc/q) quit | (k/↑) move up | (j/↓) move down",
+    "(Esc/q) quit | (k/↑) move up | (j/↓) move down | (Tab) cycle projects",
     "(Enter) toggle log | (shift+k/↑) scroll to top | (shift+j/↓) scroll to bottom",
 ];
 
@@ -1046,7 +1046,11 @@ impl QueueApp {
     }
 
     fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let info_header = Paragraph::new(Text::from(self.current_project.clone())).centered();
+        let info_header = Paragraph::new(Text::from(format!(
+            "Project: {}",
+            self.current_project.clone()
+        )))
+        .centered();
         frame.render_widget(info_header, area);
     }
 }
