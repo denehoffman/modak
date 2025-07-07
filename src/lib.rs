@@ -1,15 +1,17 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset, Utc};
+use parking_lot::Mutex;
 use petgraph::algo::toposort;
 use petgraph::graphmap::DiGraphMap;
-use pyo3::exceptions::PyIOError;
+use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::PyAny;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
@@ -23,6 +25,7 @@ use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     DefaultTerminal, Frame,
 };
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
@@ -66,59 +69,290 @@ impl Display for TaskStatus {
     }
 }
 
-#[derive(Debug)]
-struct TaskMeta {
+#[derive(Clone)]
+struct TaskRecord {
     name: String,
-    inputs: Vec<usize>,
-    outputs: Vec<PathBuf>,
-    resources: HashMap<String, usize>,
-    isolated: bool,
-    payload: String,
-    log_path: PathBuf,
-}
-
-#[derive(Serialize, Deserialize)]
-struct TaskState {
     status: TaskStatus,
     inputs: Vec<String>,
     outputs: Vec<PathBuf>,
     resources: HashMap<String, usize>,
     isolated: bool,
     log_path: PathBuf,
-    start_time: String,
-    end_time: String,
+    start_time: DateTime<FixedOffset>,
+    end_time: DateTime<FixedOffset>,
+    payload: String,
 }
-
-type TaskItem = (
-    String,
-    TaskStatus,
-    DateTime<FixedOffset>,
-    DateTime<FixedOffset>,
-    PathBuf,
-);
-
-#[derive(Serialize, Deserialize)]
-struct ModakState(BTreeMap<String, TaskState>);
-impl ModakState {
-    fn new() -> Self {
-        Self(BTreeMap::new())
+impl TaskRecord {
+    fn clone_with_status(&self, status: TaskStatus) -> Self {
+        let mut out = self.clone();
+        out.status = status;
+        out
+    }
+    fn clone_with_start_time(&self, start_time: DateTime<FixedOffset>) -> Self {
+        let mut out = self.clone();
+        out.start_time = start_time;
+        out
+    }
+    fn clone_with_end_time(&self, end_time: DateTime<FixedOffset>) -> Self {
+        let mut out = self.clone();
+        out.end_time = end_time;
+        out
     }
 }
-impl From<ModakState> for Vec<TaskItem> {
-    fn from(state: ModakState) -> Self {
-        state
-            .0
-            .iter()
-            .map(|(name, taskstate)| {
-                (
-                    name.to_owned(),
-                    taskstate.status,
-                    DateTime::parse_from_rfc3339(&taskstate.start_time).unwrap_or_default(),
-                    DateTime::parse_from_rfc3339(&taskstate.end_time).unwrap_or_default(),
-                    taskstate.log_path.clone(),
-                )
+
+struct Database {
+    conn: Arc<Mutex<Connection>>,
+}
+
+impl Database {
+    pub fn new(path: Option<PathBuf>) -> PyResult<Self> {
+        let db_path = match path {
+            Some(p) => p,
+            None => {
+                let mut default_path = dirs::home_dir()
+                    .ok_or_else(|| PyIOError::new_err("Could not determine home directory"))?;
+                default_path.push(".modak");
+
+                if !default_path.exists() {
+                    std::fs::create_dir_all(&default_path).map_err(|e| {
+                        PyIOError::new_err(format!("Failed to create .modak directory: {e}"))
+                    })?;
+                }
+
+                default_path.push("state.db");
+                default_path
+            }
+        };
+
+        let create_schema = !db_path.exists();
+
+        let conn = Connection::open(&db_path)
+            .map_err(|e| PyIOError::new_err(format!("Failed to open database: {e}")))?;
+
+        if create_schema {
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE
+                );
+
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id INTEGER PRIMARY KEY,
+                    project_id INTEGER NOT NULL,
+                    job_name TEXT NOT NULL,
+                    inputs TEXT NOT NULL,
+                    outputs TEXT NOT NULL,
+                    log_path TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    start_time TEXT NOT NULL,
+                    end_time TEXT NOT NULL,
+                    resources TEXT NOT NULL,
+                    isolated INTEGER NOT NULL,
+                    payload TEXT NOT NULL,
+                    FOREIGN KEY(project_id) REFERENCES projects(id),
+                    UNIQUE(project_id, job_name)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_jobs_project_id ON jobs(project_id);
+                ",
+            )
+            .map_err(|e| PyIOError::new_err(format!("Failed to initialize schema: {e}")))?;
+        }
+
+        Ok(Database {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+    fn upsert_task(&self, project: &str, task: &TaskRecord) -> PyResult<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn
+            .transaction()
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        tx.execute(
+            "INSERT OR IGNORE INTO projects (name) VALUES (?)",
+            [project],
+        )
+        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        let project_id: i64 = tx
+            .query_row("SELECT id FROM projects WHERE name = ?", [project], |row| {
+                row.get(0)
             })
-            .collect()
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        tx.execute(
+            "
+            INSERT INTO jobs (
+                project_id, job_name, inputs, outputs, log_path, status,
+                start_time, end_time, resources, isolated, payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project_id, job_name)
+            DO UPDATE SET
+                inputs = excluded.inputs,
+                outputs = excluded.outputs,
+                log_path = excluded.log_path,
+                status = excluded.status,
+                start_time = excluded.start_time,
+                end_time = excluded.end_time,
+                resources = excluded.resources,
+                isolated = excluded.isolated
+                payload = excluded.payload
+            ",
+            rusqlite::params![
+                project_id,
+                task.name,
+                serde_json::to_string(&task.inputs).unwrap(),
+                serde_json::to_string(&task.outputs).unwrap(),
+                task.log_path.to_string_lossy(),
+                task.status.to_string(),
+                task.start_time.to_rfc3339(),
+                task.end_time.to_rfc3339(),
+                serde_json::to_string(&task.resources).unwrap(),
+                task.isolated as i32,
+                task.payload,
+            ],
+        )
+        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        tx.commit().map_err(|e| PyIOError::new_err(e.to_string()))
+    }
+    fn get_project_state(&self, project: &str) -> PyResult<Vec<TaskRecord>> {
+        let conn = self.conn.lock();
+
+        let project_id: i64 =
+            match conn.query_row("SELECT id FROM projects WHERE name = ?", [project], |row| {
+                row.get(0)
+            }) {
+                Ok(id) => id,
+                Err(_) => return Ok(Vec::default()),
+            };
+
+        let mut stmt = conn
+            .prepare(
+                "
+            SELECT job_name, inputs, outputs, log_path, status,
+                   start_time, end_time, resources, isolated, payload
+            FROM jobs
+            WHERE project_id = ?
+            ",
+            )
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([project_id], |row| {
+                Ok(TaskRecord {
+                    name: row.get(0)?,
+                    inputs: serde_json::from_str(&row.get::<_, String>(1)?).unwrap(),
+                    outputs: serde_json::from_str(&row.get::<_, String>(2)?).unwrap(),
+                    log_path: PathBuf::from(row.get::<_, String>(3)?),
+                    status: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
+                    start_time: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?).unwrap(),
+                    end_time: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?).unwrap(),
+                    resources: serde_json::from_str(&row.get::<_, String>(7)?).unwrap(),
+                    isolated: row.get::<_, i32>(8)? != 0,
+                    payload: row.get(9)?,
+                })
+            })
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        let state = rows
+            .collect::<Result<Vec<TaskRecord>, _>>()
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+        Ok(state)
+    }
+    fn reset_project(&self, project: &str) -> PyResult<()> {
+        let mut conn = self.conn.lock();
+
+        let tx = conn
+            .transaction()
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        let project_id: Option<i64> = tx
+            .query_row("SELECT id FROM projects WHERE name = ?", [project], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        if let Some(pid) = project_id {
+            tx.execute("DELETE FROM jobs WHERE project_id = ?", [pid])
+                .map_err(|e| PyIOError::new_err(e.to_string()))?;
+            tx.execute("DELETE FROM projects WHERE id = ?", [pid])
+                .map_err(|e| PyIOError::new_err(e.to_string()))?;
+        }
+
+        tx.commit().map_err(|e| PyIOError::new_err(e.to_string()))
+    }
+    fn get_input_tasks(&self, project: &str, task_name: &str) -> PyResult<Vec<TaskRecord>> {
+        let conn = self.conn.lock();
+
+        let project_id: i64 = conn
+            .query_row("SELECT id FROM projects WHERE name = ?", [project], |row| {
+                row.get(0)
+            })
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        let inputs_json: String = conn
+            .query_row(
+                "SELECT inputs FROM jobs WHERE project_id = ? AND job_name = ?",
+                rusqlite::params![project_id, task_name],
+                |row| row.get(0),
+            )
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        let input_names: Vec<String> =
+            serde_json::from_str(&inputs_json).map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT job_name, inputs, outputs, log_path, status, start_time, end_time, resources, isolated, payload
+             FROM jobs WHERE project_id = ? AND job_name = ?",
+        ).map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        let mut results = Vec::new();
+        for input in input_names {
+            let mut rows = stmt
+                .query_map(rusqlite::params![project_id, input], |row| {
+                    Ok(TaskRecord {
+                        name: row.get(0)?,
+                        inputs: serde_json::from_str(&row.get::<_, String>(1)?).unwrap(),
+                        outputs: serde_json::from_str(&row.get::<_, String>(2)?).unwrap(),
+                        log_path: PathBuf::from(row.get::<_, String>(3)?),
+                        status: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
+                        start_time: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+                            .unwrap(),
+                        end_time: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?).unwrap(),
+                        resources: serde_json::from_str(&row.get::<_, String>(7)?).unwrap(),
+                        isolated: row.get::<_, i32>(8)? != 0,
+                        payload: row.get(9)?,
+                    })
+                })
+                .map_err(|e| PyIOError::new_err(e.to_string()))?;
+            if let Some(row) = rows.next() {
+                results.push(row.map_err(|e| PyIOError::new_err(e.to_string()))?)
+            }
+        }
+        Ok(results)
+    }
+    fn list_projects(&self) -> PyResult<Vec<String>> {
+        let conn = self.conn.lock();
+
+        let mut stmt = conn
+            .prepare("SELECT name FROM projects ORDER BY name ASC")
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        let mut projects = Vec::new();
+        for row in rows {
+            projects.push(row.map_err(|e| PyIOError::new_err(e.to_string()))?);
+        }
+
+        Ok(projects)
     }
 }
 
@@ -126,14 +360,17 @@ impl From<ModakState> for Vec<TaskItem> {
 ///
 /// Arguments
 /// ---------
+/// project : str
+///     The name of the project.
 /// workers : int, default=4
 ///     The maximum number of tasks which can run in parallel.
 /// resources : dict of str to int, optional
 ///     The available resources for the entire queue.
-/// state_file_path : Path, default=".modak"
-///     The location of the state file used to track tasks.
 /// log_path : Path, optional
 ///     If provided, this file will act as a global log for all tasks.
+/// state_file_path : Path, optional
+///     The location of the state file used to track tasks. This defaults
+///     to the $HOME/.modak/state.db
 ///
 /// Returns
 /// -------
@@ -141,36 +378,33 @@ impl From<ModakState> for Vec<TaskItem> {
 ///
 #[pyclass]
 pub struct TaskQueue {
-    tasks: HashMap<usize, TaskMeta>,
-    statuses: HashMap<usize, TaskStatus>,
-    timestamps: HashMap<usize, (String, String)>,
+    project: String,
     max_workers: usize,
     available_resources: HashMap<String, usize>,
-    running: HashMap<usize, std::thread::JoinHandle<i32>>,
-    state_file_path: PathBuf,
+    running: HashMap<String, std::thread::JoinHandle<i32>>,
     log_file_path: Option<PathBuf>,
+    database: Database,
 }
 
 #[pymethods]
 impl TaskQueue {
     #[new]
-    #[pyo3(signature = (*, workers = 4, resources = None, state_file_path = None, log_path = None))]
+    #[pyo3(signature = (project, *, workers = 4, resources = None, log_path = None, state_file_path = None))]
     fn new(
+        project: String,
         workers: usize,
         resources: Option<HashMap<String, usize>>,
-        state_file_path: Option<PathBuf>,
         log_path: Option<PathBuf>,
-    ) -> Self {
-        TaskQueue {
-            tasks: HashMap::new(),
-            statuses: HashMap::new(),
-            timestamps: HashMap::new(),
+        state_file_path: Option<PathBuf>,
+    ) -> PyResult<Self> {
+        Ok(TaskQueue {
+            project,
             max_workers: workers,
             available_resources: resources.unwrap_or_default(),
             running: HashMap::new(),
-            state_file_path: state_file_path.unwrap_or(PathBuf::from(".modak")),
             log_file_path: log_path,
-        }
+            database: Database::new(state_file_path)?,
+        })
     }
 
     /// Run a set of Tasks in parallel.
@@ -195,23 +429,27 @@ impl TaskQueue {
     ///     If the state file cannot be written to or read from
     ///
     fn run(&mut self, tasks: Vec<Bound<'_, PyAny>>) -> PyResult<()> {
+        // clear out previous runs
+        self.database.reset_project(&self.project)?;
         let mut task_objs = vec![];
         let mut seen = HashSet::new();
         let mut stack = tasks;
 
+        // get rid of duplicates and traverse graph to add inputs to list of task_objs
         while let Some(obj) = stack.pop() {
-            let task_hash = obj.hash()?;
-            if seen.contains(&task_hash) {
+            let task_name = obj.getattr("name")?.extract::<String>()?;
+            if seen.contains(&task_name) {
                 continue;
             }
-            seen.insert(task_hash);
+            seen.insert(task_name);
             stack.extend(obj.getattr("inputs")?.extract::<Vec<Bound<'_, PyAny>>>()?);
             task_objs.push(obj);
         }
 
-        let mut obj_to_index = HashMap::new();
+        // create a mapping from task name to index in task_objs for convenience
+        let mut name_to_index = HashMap::new();
         for (i, obj) in task_objs.iter().enumerate() {
-            obj_to_index.insert(obj.hash()?, i);
+            name_to_index.insert(obj.getattr("name")?.extract::<String>()?, i);
         }
 
         let mut graph: DiGraphMap<usize, ()> = DiGraphMap::new();
@@ -219,82 +457,91 @@ impl TaskQueue {
             graph.add_node(i);
             let inputs: Vec<Bound<'_, PyAny>> = obj.getattr("inputs")?.extract()?;
             for inp in inputs {
-                if let Some(&src) = obj_to_index.get(&inp.hash()?) {
+                if let Some(&src) = name_to_index.get(&inp.getattr("name")?.extract::<String>()?) {
                     graph.add_edge(src, i, ());
                 }
             }
         }
 
         let sorted = toposort(&graph, None)
-            .map_err(|_| PyErr::new::<pyo3::exceptions::PyValueError, _>("Cycle in task graph"))?;
+            .map_err(|_| PyErr::new::<PyValueError, _>("Cycle in task graph"))?;
 
         for id in sorted {
             let task_obj = &task_objs[id];
+            let name: String = task_obj.getattr("name")?.extract()?;
             let py_inputs: Vec<Bound<'_, PyAny>> = task_obj.getattr("inputs")?.extract()?;
             let mut inputs = Vec::new();
             for py_obj in py_inputs {
-                match obj_to_index.get(&py_obj.hash()?) {
-                    Some(&idx) => inputs.push(idx),
-                    None => {
-                        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                            "Unrecognized input task object",
-                        ))
-                    }
+                let input_name: String = py_obj.getattr("name")?.extract()?;
+                if name_to_index.contains_key(&input_name) {
+                    inputs.push(input_name);
+                } else {
+                    return Err(PyErr::new::<PyValueError, _>(
+                        "Unrecognized input task object",
+                    ));
                 }
             }
 
-            let name: String = task_obj.getattr("name")?.extract()?;
             let outputs: Vec<PathBuf> = task_obj.getattr("outputs")?.extract()?;
             let resources: HashMap<String, usize> = task_obj.getattr("resources")?.extract()?;
             let isolated: bool = task_obj.getattr("isolated")?.extract()?;
             let payload: String = task_obj.call_method0("serialize")?.extract()?;
             let log_path: PathBuf = task_obj.getattr("log_path")?.extract()?;
-
+            let mut status = TaskStatus::Pending;
             if !outputs.is_empty() && outputs.iter().all(|p| p.exists()) {
-                self.statuses.insert(id, TaskStatus::Skipped);
-            } else {
-                self.statuses.insert(id, TaskStatus::Pending);
+                status = TaskStatus::Skipped;
             }
             if self
                 .available_resources
                 .iter()
-                .any(|(resoruce_name, amount)| resources.get(resoruce_name).unwrap_or(&0) > amount)
+                .any(|(resource_name, amount)| resources.get(resource_name).unwrap_or(&0) > amount)
             {
-                self.statuses.insert(id, TaskStatus::Failed);
+                status = TaskStatus::Failed;
             }
-            self.timestamps.insert(id, ("".to_string(), "".to_string()));
-
-            self.tasks.insert(
-                id,
-                TaskMeta {
-                    name,
-                    inputs,
-                    outputs,
-                    resources,
-                    isolated,
-                    payload,
-                    log_path,
-                },
-            );
+            let start_time = DateTime::default();
+            let end_time = DateTime::default();
+            let record = TaskRecord {
+                name,
+                status,
+                inputs,
+                outputs,
+                resources,
+                isolated,
+                log_path,
+                start_time,
+                end_time,
+                payload,
+            };
+            self.database.upsert_task(&self.project, &record)?;
         }
-        self.update_state_file()?;
+        // Now that we have filled the database with the current state, we can run the tasks
+        // First, we get the current state of all tasks in the project:
+        let tasks = self.database.get_project_state(&self.project)?;
         loop {
             thread::sleep(Duration::from_millis(50));
-            if self.all_done() {
+            // If all done, skipped, or failed, stop looping
+            if tasks.iter().all(|t| {
+                matches!(
+                    t.status,
+                    TaskStatus::Done | TaskStatus::Skipped | TaskStatus::Failed
+                )
+            }) {
                 break;
             }
-            for (id, task) in self.tasks.iter() {
-                match self.statuses.get(id).unwrap() {
+            for task in &tasks {
+                match task.status {
                     TaskStatus::Pending => {
-                        if self.can_queue(task) {
-                            self.statuses.insert(*id, TaskStatus::Queued);
+                        if self.can_queue(&task)? {
+                            self.database.upsert_task(
+                                &self.project,
+                                &task.clone_with_status(TaskStatus::Queued),
+                            )?;
                         } else {
                             continue;
                         }
                     }
                     TaskStatus::Queued => {
-                        if self.can_run(task) {
-                            self.statuses.insert(*id, TaskStatus::Running);
+                        if self.can_run(&task) {
                             for (resource, amount) in self.available_resources.iter_mut() {
                                 if let Some(req_amount) = task.resources.get(resource) {
                                     *amount -= req_amount;
@@ -337,26 +584,46 @@ impl TaskQueue {
                                     status.code().unwrap()
                                 })
                             };
-                            self.running.insert(*id, handle);
-                            self.timestamps
-                                .insert(*id, (Utc::now().to_rfc3339(), "".to_string()));
+                            self.running.insert(task.name.clone(), handle);
+                            self.database.upsert_task(
+                                &self.project,
+                                &task
+                                    .clone_with_status(TaskStatus::Running)
+                                    .clone_with_start_time(Utc::now().into()),
+                            )?;
                         }
                     }
                     TaskStatus::Running => {
-                        let handle = self.running.remove(id).unwrap();
+                        let handle = self.running.remove(&task.name).unwrap();
+                        // if task is finished, update the database and return resources
                         if handle.is_finished() {
                             match handle.join() {
                                 Ok(status) => match status {
                                     0 => {
-                                        self.statuses.insert(*id, TaskStatus::Done);
+                                        self.database.upsert_task(
+                                            &self.project,
+                                            &task
+                                                .clone_with_status(TaskStatus::Done)
+                                                .clone_with_end_time(Utc::now().into()),
+                                        )?;
                                     }
                                     _ => {
-                                        self.statuses.insert(*id, TaskStatus::Failed);
+                                        self.database.upsert_task(
+                                            &self.project,
+                                            &task
+                                                .clone_with_status(TaskStatus::Failed)
+                                                .clone_with_end_time(Utc::now().into()),
+                                        )?;
                                     }
                                 },
                                 Err(e) => {
-                                    eprintln!("Task {id} failed: {e:?}");
-                                    self.statuses.insert(*id, TaskStatus::Failed);
+                                    eprintln!("Task {} failed: {:?}", task.name, e);
+                                    self.database.upsert_task(
+                                        &self.project,
+                                        &task
+                                            .clone_with_status(TaskStatus::Failed)
+                                            .clone_with_end_time(Utc::now().into()),
+                                    )?;
                                 }
                             }
                             for (resource, amount) in self.available_resources.iter_mut() {
@@ -364,84 +631,55 @@ impl TaskQueue {
                                     *amount += req_amount;
                                 }
                             }
-                            self.running.remove(id);
-                            let (start, _) = self.timestamps.get(id).unwrap();
-                            self.timestamps
-                                .insert(*id, (start.to_string(), Utc::now().to_rfc3339()));
                         } else {
-                            self.running.insert(*id, handle);
+                            // if the task isn't finished, reinsert it into the running list
+                            self.running.insert(task.name.clone(), handle);
                         }
                     }
                     TaskStatus::Failed => {
-                        for (d_id, d_task) in self.tasks.iter() {
-                            if d_task.inputs.contains(id) {
-                                self.statuses.insert(*d_id, TaskStatus::Failed);
+                        // if the task failed, go through all other tasks, check if the failed task
+                        // is in their input lists, and if so, fail that task too
+                        for d_task in &tasks {
+                            let d_task_input_names: Vec<String> = self
+                                .database
+                                .get_input_tasks(&self.project, &d_task.name)?
+                                .iter()
+                                .map(|t| t.name.clone())
+                                .collect();
+                            if d_task_input_names.contains(&task.name) {
+                                self.database.upsert_task(
+                                    &self.project,
+                                    &task.clone_with_status(TaskStatus::Failed),
+                                )?;
                             }
                         }
                     }
                     TaskStatus::Done | TaskStatus::Skipped => continue,
                 }
             }
-            self.update_state_file()?;
         }
         Ok(())
     }
 }
 
 impl TaskQueue {
-    fn update_state_file(&self) -> PyResult<()> {
-        let mut all_state = ModakState::new();
-        for (id, task) in &self.tasks {
-            let entry = TaskState {
-                status: self.statuses[id],
-                inputs: task
-                    .inputs
-                    .iter()
-                    .map(|inp_id| self.tasks[inp_id].name.clone())
-                    .collect(),
-                outputs: task.outputs.clone(),
-                resources: task.resources.clone(),
-                isolated: task.isolated,
-                log_path: task.log_path.clone(),
-                start_time: self.timestamps[id].0.clone(),
-                end_time: self.timestamps[id].1.clone(),
-            };
-            all_state.0.insert(task.name.clone(), entry);
-        }
-        let json = serde_json::to_string_pretty(&all_state)
-            .map_err(|e| PyIOError::new_err(e.to_string()))?;
-        std::fs::write(&self.state_file_path, json)
-            .map_err(|e| PyIOError::new_err(e.to_string()))?;
-        Ok(())
-    }
-    fn all_done(&self) -> bool {
-        self.statuses.values().all(|status| {
-            matches!(
-                status,
-                TaskStatus::Done | TaskStatus::Skipped | TaskStatus::Failed
-            )
-        })
-    }
-    fn can_queue(&self, task: &TaskMeta) -> bool {
-        for input_id in &task.inputs {
-            if matches!(
-                self.statuses[input_id],
-                TaskStatus::Done | TaskStatus::Skipped
-            ) {
-                let input_task = &self.tasks[input_id];
+    fn can_queue(&self, task: &TaskRecord) -> PyResult<bool> {
+        let input_tasks = self.database.get_input_tasks(&self.project, &task.name)?;
+        for input_task in input_tasks {
+            if matches!(input_task.status, TaskStatus::Done | TaskStatus::Skipped) {
                 for output_path_str in &input_task.outputs {
                     let path = Path::new(&output_path_str);
                     if !path.exists() {
-                        return false;
+                        return Ok(false);
                     }
                 }
             } else {
-                return false;
+                return Ok(false);
             }
         }
-        true
+        Ok(true)
     }
-    fn can_run(&self, task: &TaskMeta) -> bool {
+    fn can_run(&self, task: &TaskRecord) -> bool {
         (!task.isolated || self.running.is_empty())
             && self
                 .available_resources
@@ -467,8 +705,9 @@ enum LogState {
 
 struct QueueApp {
     state: TableState,
-    state_file_path: PathBuf,
-    items: Vec<TaskItem>,
+    database: Database,
+    current_project: String,
+    records: Vec<TaskRecord>,
     scroll_state: ScrollbarState,
     log_state: LogState,
     log_text: String,
@@ -480,11 +719,14 @@ struct QueueApp {
 }
 
 impl QueueApp {
-    fn new(state_file_path: PathBuf) -> PyResult<Self> {
+    fn new(state_file_path: Option<PathBuf>) -> PyResult<Self> {
+        let database = Database::new(state_file_path)?;
+        let current_project = database.list_projects()?[0].clone();
         Ok(Self {
             state: TableState::default().with_selected(0),
-            state_file_path,
-            items: Vec::default(),
+            database,
+            current_project,
+            records: Vec::default(),
             scroll_state: ScrollbarState::default(),
             log_state: LogState::default(),
             log_text: String::default(),
@@ -495,19 +737,17 @@ impl QueueApp {
             exit: false,
         })
     }
-    fn read_state(state_file_path: &PathBuf) -> PyResult<Vec<TaskItem>> {
-        let content = std::fs::read_to_string(state_file_path).map_err(PyIOError::new_err)?;
-        let state: ModakState =
-            serde_json::from_str(&content).map_err(|e| PyIOError::new_err(e.to_string()))?;
-        let mut state_vec: Vec<TaskItem> = state.into();
-        state_vec.sort_by(|a, b| (a.1, a.3).cmp(&(b.1, b.3)));
+    fn read_state(&self) -> PyResult<Vec<TaskRecord>> {
+        let mut state_vec: Vec<TaskRecord> =
+            self.database.get_project_state(&self.current_project)?;
+        state_vec.sort_by(|a, b| (a.status, a.end_time).cmp(&(b.status, b.end_time)));
         Ok(state_vec)
     }
 
     pub fn next_row(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {
-                if i >= self.items.len() - 1 {
+                if i >= self.records.len() - 1 {
                     0
                 } else {
                     i + 1
@@ -519,14 +759,14 @@ impl QueueApp {
         self.scroll_state = self.scroll_state.position(i);
     }
     pub fn bottom_row(&mut self) {
-        self.state.select(Some(self.items.len() - 1));
-        self.scroll_state = self.scroll_state.position(self.items.len() - 1);
+        self.state.select(Some(self.records.len() - 1));
+        self.scroll_state = self.scroll_state.position(self.records.len() - 1);
     }
     pub fn previous_row(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {
                 if i == 0 {
-                    self.items.len() - 1
+                    self.records.len() - 1
                 } else {
                     i - 1
                 }
@@ -577,8 +817,8 @@ impl QueueApp {
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         while !self.exit {
-            if let Ok(updated_items) = Self::read_state(&self.state_file_path) {
-                self.items = updated_items;
+            if let Ok(updated_items) = self.read_state() {
+                self.records = updated_items;
             }
             if let LogState::Open(path) = &self.log_state {
                 self.log_text =
@@ -591,31 +831,38 @@ impl QueueApp {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
-        self.scroll_state = self.scroll_state.content_length(self.items.len());
+        self.scroll_state = self.scroll_state.content_length(self.records.len());
         self.log_scroll_state = self
             .log_scroll_state
             .content_length(self.log_text.lines().count());
         match &self.log_state {
             LogState::Closed => {
-                let vertical = &Layout::vertical([Constraint::Fill(1), Constraint::Length(4)]);
+                let vertical = &Layout::vertical([
+                    Constraint::Length(1),
+                    Constraint::Fill(1),
+                    Constraint::Length(4),
+                ]);
                 let rects = vertical.split(frame.area());
-                self.render_table(frame, rects[0]);
-                self.render_scrollbar(frame, rects[0]);
-                self.render_footer(frame, rects[1]);
+                self.render_header(frame, rects[0]);
+                self.render_table(frame, rects[1]);
+                self.render_scrollbar(frame, rects[1]);
+                self.render_footer(frame, rects[2]);
             }
             LogState::Open(_) => {
                 let vertical = &Layout::vertical([
+                    Constraint::Length(1),
                     Constraint::Fill(1),
                     Constraint::Fill(1),
                     Constraint::Length(4),
                 ]);
                 let rects = vertical.split(frame.area());
                 self.log_window_lines = rects[1].height as usize;
-                self.render_table(frame, rects[0]);
-                self.render_scrollbar(frame, rects[0]);
-                self.render_log(frame, rects[1]);
-                self.render_log_scrollbar(frame, rects[1]);
-                self.render_footer(frame, rects[2]);
+                self.render_header(frame, rects[0]);
+                self.render_table(frame, rects[1]);
+                self.render_scrollbar(frame, rects[1]);
+                self.render_log(frame, rects[2]);
+                self.render_log_scrollbar(frame, rects[2]);
+                self.render_footer(frame, rects[3]);
             }
         }
     }
@@ -641,17 +888,26 @@ impl QueueApp {
                         LogState::Closed => self.previous_row(),
                         LogState::Open(_) => self.scroll_log_up(),
                     },
+                    KeyCode::Tab => {
+                        let all_projects = self.database.list_projects().unwrap();
+                        let current_index = all_projects
+                            .iter()
+                            .position(|p| *p == self.current_project)
+                            .unwrap_or_default();
+                        self.current_project =
+                            all_projects[(current_index + 1) % all_projects.len()].clone();
+                    }
                     KeyCode::Enter => match &self.log_state {
                         LogState::Closed => {
-                            let log_path = self.items[self.state.selected().unwrap_or_default()]
-                                .4
+                            let log_path = self.records[self.state.selected().unwrap_or_default()]
+                                .log_path
                                 .clone();
                             self.log_state = LogState::Open(log_path);
                         }
                         LogState::Open(log_path) => {
-                            let new_log_path = self.items
+                            let new_log_path = self.records
                                 [self.state.selected().unwrap_or_default()]
-                            .4
+                            .log_path
                             .clone();
                             if *log_path != new_log_path {
                                 self.log_state = LogState::Open(new_log_path);
@@ -673,17 +929,18 @@ impl QueueApp {
             .collect::<Row>()
             .height(1);
         let rows: Vec<Row> = self
-            .items
+            .records
             .iter()
             .enumerate()
             .map(|(i, item)| {
                 Row::new([
-                    Cell::from(Text::from(item.0.clone())),
+                    Cell::from(Text::from(item.name.clone())),
                     Cell::from(
-                        Text::from(item.1.to_string()).style(Style::new().fg(item.1.color())),
+                        Text::from(item.status.to_string())
+                            .style(Style::new().fg(item.status.color())),
                     ),
-                    Cell::from(item.2.format("%H:%M:%S").to_string()),
-                    Cell::from(item.3.format("%H:%M:%S").to_string()),
+                    Cell::from(item.start_time.format("%H:%M:%S").to_string()),
+                    Cell::from(item.end_time.format("%H:%M:%S").to_string()),
                 ])
                 .style(Style::new().bg(if i % 2 == 0 {
                     catppuccin::PALETTE.mocha.colors.surface0.into()
@@ -759,10 +1016,15 @@ impl QueueApp {
             .block(Block::bordered().border_type(BorderType::Double));
         frame.render_widget(info_footer, area);
     }
+
+    fn render_header(&self, frame: &mut Frame, area: Rect) {
+        let info_header = Paragraph::new(Text::from(self.current_project.clone())).centered();
+        frame.render_widget(info_header, area);
+    }
 }
 
 #[pyfunction]
-fn run_queue_wrapper(state_file_path: PathBuf) -> PyResult<()> {
+fn run_queue_wrapper(state_file_path: Option<PathBuf>) -> PyResult<()> {
     let mut terminal = ratatui::init();
     let result = QueueApp::new(state_file_path)?.run(&mut terminal);
     ratatui::restore();
