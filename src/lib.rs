@@ -6,7 +6,7 @@ use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, FixedOffset, Utc};
 use parking_lot::Mutex;
@@ -16,12 +16,12 @@ use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::types::{IntoPyDict, PyDict};
 use pyo3::PyAny;
 use pyo3::{prelude::*, IntoPyObjectExt};
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Text;
 use ratatui::widgets::{
-    Block, BorderType, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Table, TableState,
+    Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Table, TableState,
 };
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -844,6 +844,8 @@ impl QueueApp {
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        let tick_rate = Duration::from_secs(1);
+        let mut last_tick = Instant::now();
         while !self.exit {
             if let Ok(updated_items) = self.read_state() {
                 self.records = updated_items;
@@ -853,7 +855,13 @@ impl QueueApp {
                     std::fs::read_to_string(path).unwrap_or("Error reading log".to_string());
             }
             terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events()?;
+            let timeout = tick_rate
+                .checked_sub(last_tick.elapsed())
+                .unwrap_or_else(|| Duration::from_secs(0));
+            self.handle_events(timeout)?;
+            if last_tick.elapsed() >= tick_rate {
+                last_tick = Instant::now();
+            }
         }
         Ok(())
     }
@@ -894,57 +902,64 @@ impl QueueApp {
             }
         }
     }
-    fn handle_events(&mut self) -> std::io::Result<()> {
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press {
-                let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => self.exit = true,
-                    KeyCode::Char('J') | KeyCode::Down if shift_pressed => match &self.log_state {
-                        LogState::Closed => self.bottom_row(),
-                        LogState::Open(_) => self.scroll_log_bottom(),
-                    },
-                    KeyCode::Char('K') | KeyCode::Up if shift_pressed => match &self.log_state {
-                        LogState::Closed => self.top_row(),
-                        LogState::Open(_) => self.scroll_log_top(),
-                    },
-                    KeyCode::Char('j') | KeyCode::Down => match &self.log_state {
-                        LogState::Closed => self.next_row(),
-                        LogState::Open(_) => self.scroll_log_down(),
-                    },
-                    KeyCode::Char('k') | KeyCode::Up => match &self.log_state {
-                        LogState::Closed => self.previous_row(),
-                        LogState::Open(_) => self.scroll_log_up(),
-                    },
-                    KeyCode::Tab => {
-                        let all_projects = self.database.list_projects().unwrap();
-                        let current_index = all_projects
-                            .iter()
-                            .position(|p| *p == self.current_project)
-                            .unwrap_or_default();
-                        self.current_project =
-                            all_projects[(current_index + 1) % all_projects.len()].clone();
-                    }
-                    KeyCode::Enter => match &self.log_state {
-                        LogState::Closed => {
-                            let log_path = self.records[self.state.selected().unwrap_or_default()]
-                                .log_path
-                                .clone();
-                            self.log_state = LogState::Open(log_path);
-                        }
-                        LogState::Open(log_path) => {
-                            let new_log_path = self.records
-                                [self.state.selected().unwrap_or_default()]
-                            .log_path
-                            .clone();
-                            if *log_path != new_log_path {
-                                self.log_state = LogState::Open(new_log_path);
-                            } else {
-                                self.log_state = LogState::Closed;
+    fn handle_events(&mut self, timeout: Duration) -> std::io::Result<()> {
+        if event::poll(timeout)? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    let shift_pressed = key.modifiers.contains(KeyModifiers::SHIFT);
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => self.exit = true,
+                        KeyCode::Char('J') | KeyCode::Down if shift_pressed => {
+                            match &self.log_state {
+                                LogState::Closed => self.bottom_row(),
+                                LogState::Open(_) => self.scroll_log_bottom(),
                             }
                         }
-                    },
-                    _ => {}
+                        KeyCode::Char('K') | KeyCode::Up if shift_pressed => {
+                            match &self.log_state {
+                                LogState::Closed => self.top_row(),
+                                LogState::Open(_) => self.scroll_log_top(),
+                            }
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => match &self.log_state {
+                            LogState::Closed => self.next_row(),
+                            LogState::Open(_) => self.scroll_log_down(),
+                        },
+                        KeyCode::Char('k') | KeyCode::Up => match &self.log_state {
+                            LogState::Closed => self.previous_row(),
+                            LogState::Open(_) => self.scroll_log_up(),
+                        },
+                        KeyCode::Tab => {
+                            let all_projects = self.database.list_projects().unwrap();
+                            let current_index = all_projects
+                                .iter()
+                                .position(|p| *p == self.current_project)
+                                .unwrap_or_default();
+                            self.current_project =
+                                all_projects[(current_index + 1) % all_projects.len()].clone();
+                        }
+                        KeyCode::Enter => match &self.log_state {
+                            LogState::Closed => {
+                                let log_path = self.records
+                                    [self.state.selected().unwrap_or_default()]
+                                .log_path
+                                .clone();
+                                self.log_state = LogState::Open(log_path);
+                            }
+                            LogState::Open(log_path) => {
+                                let new_log_path = self.records
+                                    [self.state.selected().unwrap_or_default()]
+                                .log_path
+                                .clone();
+                                if *log_path != new_log_path {
+                                    self.log_state = LogState::Open(new_log_path);
+                                } else {
+                                    self.log_state = LogState::Closed;
+                                }
+                            }
+                        },
+                        _ => {}
+                    }
                 }
             }
         }
@@ -971,9 +986,9 @@ impl QueueApp {
                     Cell::from(item.end_time.format("%H:%M:%S").to_string()),
                 ])
                 .style(Style::new().bg(if i % 2 == 0 {
-                    catppuccin::PALETTE.mocha.colors.surface0.into()
-                } else {
                     catppuccin::PALETTE.mocha.colors.surface1.into()
+                } else {
+                    catppuccin::PALETTE.mocha.colors.surface2.into()
                 }))
                 .height(1)
             })
@@ -1010,6 +1025,10 @@ impl QueueApp {
         match &self.log_state {
             LogState::Closed => {}
             LogState::Open(_) => {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Min(1)])
+                    .split(area);
                 if self.follow_log {
                     self.log_scroll = self
                         .log_text
@@ -1018,9 +1037,25 @@ impl QueueApp {
                         .saturating_sub(self.log_window_lines);
                     self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
                 }
-                let paragraph =
-                    Paragraph::new(self.log_text.clone()).scroll((self.log_scroll as u16, 0));
-                frame.render_widget(paragraph, area);
+                let header = Paragraph::new(
+                    self.records[self.state.selected().unwrap_or_default()]
+                        .name
+                        .clone(),
+                )
+                .style(
+                    Style::new()
+                        .fg(catppuccin::PALETTE.mocha.colors.base.into())
+                        .bg(catppuccin::PALETTE.mocha.colors.mauve.into()),
+                );
+                let log = Paragraph::new(self.log_text.clone())
+                    .style(
+                        Style::new()
+                            .fg(catppuccin::PALETTE.mocha.colors.text.into())
+                            .bg(catppuccin::PALETTE.mocha.colors.surface0.into()),
+                    )
+                    .scroll((self.log_scroll as u16, 0));
+                frame.render_widget(header, chunks[0]);
+                frame.render_widget(log, chunks[1]);
             }
         }
     }
@@ -1046,12 +1081,20 @@ impl QueueApp {
     }
 
     fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let info_header = Paragraph::new(Text::from(format!(
-            "Project: {}",
-            self.current_project.clone()
-        )))
-        .centered();
-        frame.render_widget(info_header, area);
+        let time_str = Utc::now().format("%H:%M:%S UTC").to_string();
+        let header_row = Row::new(vec![
+            Cell::from(format!("Project: {}", self.current_project)),
+            Cell::from(Text::from(time_str).right_aligned()),
+        ]);
+        let table = Table::new(
+            vec![header_row],
+            [Constraint::Percentage(50), Constraint::Percentage(50)],
+        )
+        .column_spacing(1)
+        .highlight_symbol("")
+        .fg(catppuccin::PALETTE.mocha.colors.base)
+        .bg(catppuccin::PALETTE.mocha.colors.blue);
+        frame.render_widget(table, area);
     }
 }
 
