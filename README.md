@@ -111,7 +111,7 @@ t1 = PrintTask(name="task1")
 t2 = PrintTask(name="task2", inputs=[t1])
 t3 = PrintTask(name="task3", inputs=[t2])
 
-queue = TaskQueue()
+queue = TaskQueue('example1')
 queue.run([t3])
 ```
 
@@ -139,7 +139,7 @@ d = DummyTask(name="D", inputs=[a, b, c], outputs=[Path("d.out")])
 e = DummyTask(name="E", inputs=[d], outputs=[Path("e.out")])
 f = DummyTask(name="F", inputs=[d], outputs=[Path("f.out")])
 
-queue = TaskQueue()
+queue = TaskQueue('example2')
 queue.run([e, f])
 
 ```
@@ -188,6 +188,7 @@ viz = SimTask(name="Visualization", inputs=[feat1, feat2], outputs=[Path("viz.pn
 stats = SimTask(name="Stats", inputs=[feat3], outputs=[Path("stats.txt")], resources={"cpu": 1})
 
 queue = TaskQueue(
+    'example3',
     workers=4,
     resources={"cpu": 4, "gpu": 1}
 )
