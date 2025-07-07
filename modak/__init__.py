@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import base64
-import json
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Literal, override
 
 import cloudpickle
 
-from .modak import TaskQueue, run_queue_wrapper
+from .modak import (
+    TaskQueue,
+    get_project_state,
+    get_projects,
+    reset_project,
+    run_queue_wrapper,
+)
 
 if TYPE_CHECKING:
     from loguru import Logger
@@ -26,6 +31,7 @@ class Task(ABC):
         isolated: bool = False,
         log_file: Path | None = None,
         log_directory: Path | None = None,
+        log_behavior: Literal["overwrite", "append"] = "overwrite",
     ):
         """
         Initialize a Task.
@@ -55,6 +61,7 @@ class Task(ABC):
         self._log_path = (log_directory or Path.cwd()) / (
             log_file or f"{self._name}.log"
         )
+        self._log_behavior = log_behavior
 
     @override
     def __hash__(self) -> int:
@@ -151,6 +158,18 @@ class Task(ABC):
 
         return self._log_path
 
+    @property
+    def log_behavior(self) -> Literal["overwrite", "append"]:
+        """
+        Get the logging behavior for this task.
+
+        Returns
+        -------
+        str
+            Logging behavior ("overwrite" or "append").
+        """
+        return self._log_behavior
+
     @abstractmethod
     def run(self) -> None:
         """
@@ -198,4 +217,11 @@ class Task(ABC):
         return cloudpickle.loads(raw_bytes)
 
 
-__all__ = ["Task", "TaskQueue", "run_queue_wrapper"]
+__all__ = [
+    "Task",
+    "TaskQueue",
+    "run_queue_wrapper",
+    "get_projects",
+    "get_project_state",
+    "reset_project",
+]

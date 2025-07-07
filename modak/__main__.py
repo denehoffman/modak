@@ -13,8 +13,8 @@ def main():
     try:
         task = Task.deserialize(input_path.read_text(encoding="utf-8"))
         os.remove(input_path)
-    except Exception:  # noqa: BLE001
-        print("Failed to deserialize task:", file=sys.stderr)  # noqa: T201
+    except Exception:
+        print("Failed to deserialize task:", file=sys.stderr)
         traceback.print_exc()
         sys.exit(2)
     logger.remove()
@@ -31,7 +31,7 @@ def main():
         )
     try:
         task.run()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("Task execution failed:")
         traceback.print_exc()
         sys.exit(3)
