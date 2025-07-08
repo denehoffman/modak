@@ -146,6 +146,10 @@ impl Database {
 
         let conn = Connection::open(&db_path)
             .map_err(|e| PyIOError::new_err(format!("Failed to open database: {e}")))?;
+        conn.pragma_update(None, "journal_mode", &"WAL")
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+        conn.busy_timeout(Duration::from_secs(30))
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
 
         if create_schema {
             conn.execute_batch(
