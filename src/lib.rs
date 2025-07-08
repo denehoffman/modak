@@ -546,6 +546,13 @@ impl TaskQueue {
             };
             self.database.upsert_task(&self.project, &record)?;
         }
+        // skip container jobs with no outputs where all inputs are complete
+        for task in self.database.get_project_state(&self.project)? {
+            if task.outputs.is_empty() && self.can_queue(&task)? {
+                self.database
+                    .upsert_task(&self.project, &task.clone_with_status(TaskStatus::Skipped))?;
+            }
+        }
         // Now that we have filled the database with the current state, we can run the tasks
         loop {
             thread::sleep(Duration::from_millis(50));
