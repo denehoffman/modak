@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 catppuccin = { version = "2.5.1", features = ["ratatui"] }
 chrono = "0.4.41"
 dirs = "6.0.0"
+heed3 = "0.22.0"
 parking_lot = "0.12.4"
 petgraph = "0.8.1"
 pyo3 = "0.25.0"

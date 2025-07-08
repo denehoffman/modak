@@ -6,7 +6,7 @@ use std::{
 };
 
 use chrono::Utc;
-use pyo3::PyResult;
+use pyo3::{exceptions::PyValueError, PyResult};
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -55,30 +55,46 @@ pub struct QueueApp {
 
 impl QueueApp {
     pub fn new(state_file_path: Option<PathBuf>, project: Option<String>) -> PyResult<Self> {
-        let database = Database::new(state_file_path)?;
-        let projects = database.list_projects()?;
-        let current_project = if let Some(proj) = project {
-            projects.iter().position(|p| *p == proj).unwrap_or(0)
-        } else {
-            0
+        let projects_from_db = Database::list_projects(state_file_path.clone())?;
+
+        let current_project_idx = match project {
+            Some(p_name) => projects_from_db
+                .iter()
+                .position(|p| *p == p_name)
+                .ok_or_else(|| PyValueError::new_err(format!("Project '{}' not found.", p_name)))?,
+            None => {
+                if projects_from_db.is_empty() {
+                    return Err(PyValueError::new_err(
+                        "No project name provided and no projects found in the database.",
+                    ));
+                }
+                0
+            }
         };
+
         let (db_tx, db_rx) = mpsc::channel::<String>();
         let (result_tx, result_rx) = mpsc::channel::<DbResult>();
+
+        let thread_state_file_path = state_file_path.clone();
+
         thread::spawn(move || {
             for project_command in db_rx {
-                let mut records = database.get_project_state(&project_command).unwrap();
-                records.sort_by(|a, b| (a.status, a.end_time).cmp(&(b.status, b.end_time)));
-                let projects = database.list_projects().unwrap();
+                let thread_database =
+                    Database::new(&project_command, thread_state_file_path.clone()).unwrap();
+                let mut records = thread_database.get_project_state().unwrap();
+                records.sort_by(|a, b| (a.status, b.end_time).cmp(&(b.status, a.end_time)));
+                let projects = Database::list_projects(thread_state_file_path.clone()).unwrap();
                 let _ = result_tx.send(DbResult(records, projects));
             }
         });
+
         let mut out = Self {
             state: TableState::default().with_selected(0),
             db_tx,
             result_rx,
             db_pending: false,
-            current_project,
-            projects,
+            current_project: current_project_idx,
+            projects: projects_from_db,
             records: Vec::default(),
             scroll_state: ScrollbarState::default(),
             log_state: LogState::default(),
@@ -101,8 +117,14 @@ impl QueueApp {
     }
     fn poll_results(&mut self) {
         while let Ok(result) = self.result_rx.try_recv() {
+            let current_project_name_before_update = self.projects[self.current_project].clone();
             self.records = result.0;
             self.projects = result.1;
+            self.current_project = self
+                .projects
+                .iter()
+                .position(|p| *p == current_project_name_before_update)
+                .unwrap_or(0);
             self.db_pending = false;
         }
     }

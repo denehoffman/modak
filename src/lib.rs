@@ -17,7 +17,7 @@ use pyo3::types::{IntoPyDict, PyDict};
 use pyo3::PyAny;
 use pyo3::{prelude::*, IntoPyObjectExt};
 use ratatui::style::Color;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -123,28 +123,29 @@ struct Database {
     conn: Arc<Mutex<Connection>>,
 }
 impl Database {
-    pub fn new(path: Option<PathBuf>) -> PyResult<Self> {
-        let db_path = match path {
+    pub fn new(project: &str, base_path: Option<PathBuf>) -> PyResult<Self> {
+        let base_dir = match base_path {
             Some(p) => p,
             None => {
                 let mut default_path = dirs::home_dir()
                     .ok_or_else(|| PyIOError::new_err("Could not determine home directory"))?;
                 default_path.push(".modak");
-
-                if !default_path.exists() {
-                    std::fs::create_dir_all(&default_path).map_err(|e| {
-                        PyIOError::new_err(format!("Failed to create .modak directory: {e}"))
-                    })?;
-                }
-
-                default_path.push("state.db");
                 default_path
             }
         };
 
-        let create_schema = !db_path.exists();
+        if !base_dir.exists() {
+            std::fs::create_dir_all(&base_dir).map_err(|e| {
+                PyIOError::new_err(format!("Failed to create .modak directory: {e}"))
+            })?;
+        }
 
-        let conn = Connection::open(&db_path)
+        let mut project_db_path = base_dir.clone();
+        project_db_path.push(format!("{}.db", project));
+
+        let create_schema = !project_db_path.exists();
+
+        let conn = Connection::open(&project_db_path)
             .map_err(|e| PyIOError::new_err(format!("Failed to open database: {e}")))?;
         conn.pragma_update(None, "journal_mode", &"WAL")
             .map_err(|e| PyIOError::new_err(e.to_string()))?;
@@ -154,15 +155,9 @@ impl Database {
         if create_schema {
             conn.execute_batch(
                 "
-                CREATE TABLE IF NOT EXISTS projects (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE
-                );
-
                 CREATE TABLE IF NOT EXISTS jobs (
                     id INTEGER PRIMARY KEY,
-                    project_id INTEGER NOT NULL,
-                    job_name TEXT NOT NULL,
+                    job_name TEXT NOT NULL UNIQUE,
                     inputs TEXT NOT NULL,
                     outputs TEXT NOT NULL,
                     log_path TEXT NOT NULL,
@@ -171,12 +166,8 @@ impl Database {
                     end_time TEXT NOT NULL,
                     resources TEXT NOT NULL,
                     isolated INTEGER NOT NULL,
-                    payload TEXT NOT NULL,
-                    FOREIGN KEY(project_id) REFERENCES projects(id),
-                    UNIQUE(project_id, job_name)
+                    payload TEXT NOT NULL
                 );
-
-                CREATE INDEX IF NOT EXISTS idx_jobs_project_id ON jobs(project_id);
                 ",
             )
             .map_err(|e| PyIOError::new_err(format!("Failed to initialize schema: {e}")))?;
@@ -186,32 +177,20 @@ impl Database {
             conn: Arc::new(Mutex::new(conn)),
         })
     }
-    fn upsert_task(&self, project: &str, task: &TaskRecord) -> PyResult<()> {
+    fn upsert_task(&self, task: &TaskRecord) -> PyResult<()> {
         let mut conn = self.conn.lock();
         let tx = conn
             .transaction()
             .map_err(|e| PyIOError::new_err(e.to_string()))?;
 
         tx.execute(
-            "INSERT OR IGNORE INTO projects (name) VALUES (?)",
-            [project],
-        )
-        .map_err(|e| PyIOError::new_err(e.to_string()))?;
-
-        let project_id: i64 = tx
-            .query_row("SELECT id FROM projects WHERE name = ?", [project], |row| {
-                row.get(0)
-            })
-            .map_err(|e| PyIOError::new_err(e.to_string()))?;
-
-        tx.execute(
             "
             INSERT INTO jobs (
-                project_id, job_name, inputs, outputs, log_path, status,
+                job_name, inputs, outputs, log_path, status,
                 start_time, end_time, resources, isolated, payload
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(project_id, job_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_name)
             DO UPDATE SET
                 inputs = excluded.inputs,
                 outputs = excluded.outputs,
@@ -224,7 +203,6 @@ impl Database {
                 payload = excluded.payload
             ",
             rusqlite::params![
-                project_id,
                 task.name,
                 serde_json::to_string(&task.inputs).unwrap(),
                 serde_json::to_string(&task.outputs).unwrap(),
@@ -241,33 +219,22 @@ impl Database {
 
         tx.commit().map_err(|e| PyIOError::new_err(e.to_string()))
     }
-    fn batch_upsert_task(&self, project: &str, tasks: &[TaskRecord]) -> PyResult<()> {
+    fn batch_upsert_task(&self, tasks: &[TaskRecord]) -> PyResult<()> {
         let mut conn = self.conn.lock();
         let tx = conn
             .transaction()
             .map_err(|e| PyIOError::new_err(e.to_string()))?;
 
-        tx.execute(
-            "INSERT OR IGNORE INTO projects (name) VALUES (?)",
-            [project],
-        )
-        .map_err(|e| PyIOError::new_err(e.to_string()))?;
-
-        let project_id: i64 = tx
-            .query_row("SELECT id FROM projects WHERE name = ?", [project], |row| {
-                row.get(0)
-            })
-            .map_err(|e| PyIOError::new_err(e.to_string()))?;
         {
             let mut stmt = tx
                 .prepare(
                     "
             INSERT INTO jobs (
-                project_id, job_name, inputs, outputs, log_path, status,
+                job_name, inputs, outputs, log_path, status,
                 start_time, end_time, resources, isolated, payload
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(project_id, job_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_name)
             DO UPDATE SET
                 inputs = excluded.inputs,
                 outputs = excluded.outputs,
@@ -283,7 +250,6 @@ impl Database {
                 .map_err(|e| PyIOError::new_err(e.to_string()))?;
             for task in tasks {
                 stmt.execute(rusqlite::params![
-                    project_id,
                     task.name,
                     serde_json::to_string(&task.inputs).unwrap(),
                     serde_json::to_string(&task.outputs).unwrap(),
@@ -300,16 +266,8 @@ impl Database {
         }
         tx.commit().map_err(|e| PyIOError::new_err(e.to_string()))
     }
-    fn get_project_state(&self, project: &str) -> PyResult<Vec<TaskRecord>> {
+    fn get_project_state(&self) -> PyResult<Vec<TaskRecord>> {
         let conn = self.conn.lock();
-
-        let project_id: i64 =
-            match conn.query_row("SELECT id FROM projects WHERE name = ?", [project], |row| {
-                row.get(0)
-            }) {
-                Ok(id) => id,
-                Err(_) => return Ok(Vec::default()),
-            };
 
         let mut stmt = conn
             .prepare(
@@ -317,13 +275,12 @@ impl Database {
             SELECT job_name, inputs, outputs, log_path, status,
                    start_time, end_time, resources, isolated, payload
             FROM jobs
-            WHERE project_id = ?
             ",
             )
             .map_err(|e| PyIOError::new_err(e.to_string()))?;
 
         let rows = stmt
-            .query_map([project_id], |row| {
+            .query_map([], |row| {
                 Ok(TaskRecord {
                     name: row.get(0)?,
                     inputs: serde_json::from_str(&row.get::<_, String>(1)?).unwrap(),
@@ -344,42 +301,21 @@ impl Database {
             .map_err(|e| PyIOError::new_err(e.to_string()))?;
         Ok(state)
     }
-    fn reset_project(&self, project: &str) -> PyResult<()> {
-        let mut conn = self.conn.lock();
-
-        let tx = conn
-            .transaction()
-            .map_err(|e| PyIOError::new_err(e.to_string()))?;
-
-        let project_id: Option<i64> = tx
-            .query_row("SELECT id FROM projects WHERE name = ?", [project], |row| {
-                row.get(0)
-            })
-            .optional()
-            .map_err(|e| PyIOError::new_err(e.to_string()))?;
-
-        if let Some(pid) = project_id {
-            tx.execute("DELETE FROM jobs WHERE project_id = ?", [pid])
-                .map_err(|e| PyIOError::new_err(e.to_string()))?;
-            tx.execute("DELETE FROM projects WHERE id = ?", [pid])
-                .map_err(|e| PyIOError::new_err(e.to_string()))?;
-        }
-
-        tx.commit().map_err(|e| PyIOError::new_err(e.to_string()))
-    }
-    fn get_input_tasks(&self, project: &str, task_name: &str) -> PyResult<Vec<TaskRecord>> {
+    fn reset_project(&self) -> PyResult<()> {
         let conn = self.conn.lock();
 
-        let project_id: i64 = conn
-            .query_row("SELECT id FROM projects WHERE name = ?", [project], |row| {
-                row.get(0)
-            })
-            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+        conn.execute("DELETE FROM jobs", [])
+            .map_err(|e| PyIOError::new_err(format!("Failed to clear jobs table: {e}")))?;
+
+        Ok(())
+    }
+    fn get_input_tasks(&self, _project: &str, task_name: &str) -> PyResult<Vec<TaskRecord>> {
+        let conn = self.conn.lock();
 
         let inputs_json: String = conn
             .query_row(
-                "SELECT inputs FROM jobs WHERE project_id = ? AND job_name = ?",
-                rusqlite::params![project_id, task_name],
+                "SELECT inputs FROM jobs WHERE job_name = ?",
+                [task_name],
                 |row| row.get(0),
             )
             .map_err(|e| PyIOError::new_err(e.to_string()))?;
@@ -389,13 +325,13 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT job_name, inputs, outputs, log_path, status, start_time, end_time, resources, isolated, payload
-             FROM jobs WHERE project_id = ? AND job_name = ?",
+             FROM jobs WHERE job_name = ?",
         ).map_err(|e| PyIOError::new_err(e.to_string()))?;
 
         let mut results = Vec::new();
         for input in input_names {
             let mut rows = stmt
-                .query_map(rusqlite::params![project_id, input], |row| {
+                .query_map(rusqlite::params![input], |row| {
                     Ok(TaskRecord {
                         name: row.get(0)?,
                         inputs: serde_json::from_str(&row.get::<_, String>(1)?).unwrap(),
@@ -417,22 +353,38 @@ impl Database {
         }
         Ok(results)
     }
-    fn list_projects(&self) -> PyResult<Vec<String>> {
-        let conn = self.conn.lock();
+    fn list_projects(base_path: Option<PathBuf>) -> PyResult<Vec<String>> {
+        let base_dir = match base_path {
+            Some(p) => p,
+            None => {
+                let mut default_path = dirs::home_dir()
+                    .ok_or_else(|| PyIOError::new_err("Could not determine home directory"))?;
+                default_path.push(".modak");
+                default_path
+            }
+        };
 
-        let mut stmt = conn
-            .prepare("SELECT name FROM projects ORDER BY name ASC")
-            .map_err(|e| PyIOError::new_err(e.to_string()))?;
-
-        let rows = stmt
-            .query_map([], |row| row.get(0))
-            .map_err(|e| PyIOError::new_err(e.to_string()))?;
-
-        let mut projects = Vec::new();
-        for row in rows {
-            projects.push(row.map_err(|e| PyIOError::new_err(e.to_string()))?);
+        if !base_dir.exists() {
+            return Ok(Vec::new()); // No directory, so no projects
         }
 
+        let mut projects = Vec::new();
+        for entry in std::fs::read_dir(&base_dir)
+            .map_err(|e| PyIOError::new_err(format!("Failed to read .modak directory: {e}")))?
+        {
+            let entry = entry.map_err(|e| PyIOError::new_err(e.to_string()))?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(os_str_name) = path.file_name() {
+                    let file_name = os_str_name.to_string_lossy();
+                    if file_name.ends_with(".db") {
+                        let project_name = file_name.trim_end_matches(".db").to_string();
+                        projects.push(project_name);
+                    }
+                }
+            }
+        }
+        projects.sort();
         Ok(projects)
     }
 }
@@ -479,12 +431,12 @@ impl TaskQueue {
         state_file_path: Option<PathBuf>,
     ) -> PyResult<Self> {
         Ok(TaskQueue {
-            project,
+            project: project.clone(),
             max_workers: workers,
             available_resources: resources.unwrap_or_default(),
             running: HashMap::new(),
             log_file_path: log_path,
-            database: Database::new(state_file_path)?,
+            database: Database::new(&project, state_file_path)?,
         })
     }
 
@@ -511,7 +463,7 @@ impl TaskQueue {
     ///
     fn run(&mut self, tasks: Vec<Bound<'_, PyAny>>) -> PyResult<()> {
         // clear out previous runs
-        self.database.reset_project(&self.project)?;
+        self.database.reset_project()?;
         let mut task_objs = vec![];
         let mut seen = HashSet::new();
         let mut stack = tasks;
@@ -600,19 +552,19 @@ impl TaskQueue {
             };
             tasks.push(record);
         }
-        self.database.batch_upsert_task(&self.project, &tasks)?;
+        self.database.batch_upsert_task(&tasks)?;
         // skip container jobs with no outputs where all inputs are complete
-        for task in self.database.get_project_state(&self.project)? {
+        for task in self.database.get_project_state()? {
             if task.outputs.is_empty() && self.can_queue(&task)? {
                 self.database
-                    .upsert_task(&self.project, &task.clone_with_status(TaskStatus::Skipped))?;
+                    .upsert_task(&task.clone_with_status(TaskStatus::Skipped))?;
             }
         }
         // Now that we have filled the database with the current state, we can run the tasks
         loop {
             thread::sleep(Duration::from_millis(50));
             // First, we get the current state of all tasks in the project:
-            let tasks = self.database.get_project_state(&self.project)?;
+            let tasks = self.database.get_project_state()?;
             // If all done, skipped, or failed, stop looping
             if tasks.iter().all(|t| {
                 matches!(
@@ -626,10 +578,8 @@ impl TaskQueue {
                 match task.status {
                     TaskStatus::Pending => {
                         if self.can_queue(&task)? {
-                            self.database.upsert_task(
-                                &self.project,
-                                &task.clone_with_status(TaskStatus::Queued),
-                            )?;
+                            self.database
+                                .upsert_task(&task.clone_with_status(TaskStatus::Queued))?;
                         } else {
                             continue;
                         }
@@ -680,7 +630,6 @@ impl TaskQueue {
                             };
                             self.running.insert(task.name.clone(), handle);
                             self.database.upsert_task(
-                                &self.project,
                                 &task
                                     .clone_with_status(TaskStatus::Running)
                                     .clone_with_start_time(Utc::now().into()),
@@ -695,7 +644,6 @@ impl TaskQueue {
                                 Ok(status) => match status {
                                     0 => {
                                         self.database.upsert_task(
-                                            &self.project,
                                             &task
                                                 .clone_with_status(TaskStatus::Done)
                                                 .clone_with_end_time(Utc::now().into()),
@@ -703,7 +651,6 @@ impl TaskQueue {
                                     }
                                     _ => {
                                         self.database.upsert_task(
-                                            &self.project,
                                             &task
                                                 .clone_with_status(TaskStatus::Failed)
                                                 .clone_with_end_time(Utc::now().into()),
@@ -713,7 +660,6 @@ impl TaskQueue {
                                 Err(e) => {
                                     eprintln!("Task {} failed: {:?}", task.name, e);
                                     self.database.upsert_task(
-                                        &self.project,
                                         &task
                                             .clone_with_status(TaskStatus::Failed)
                                             .clone_with_end_time(Utc::now().into()),
@@ -741,10 +687,8 @@ impl TaskQueue {
                                 .map(|t| t.name.clone())
                                 .collect();
                             if d_task_input_names.contains(&task.name) {
-                                self.database.upsert_task(
-                                    &self.project,
-                                    &task.clone_with_status(TaskStatus::Failed),
-                                )?;
+                                self.database
+                                    .upsert_task(&task.clone_with_status(TaskStatus::Failed))?;
                             }
                         }
                     }
@@ -798,8 +742,7 @@ fn run_queue_wrapper(state_file_path: Option<PathBuf>, project: Option<String>) 
 
 #[pyfunction]
 fn get_projects(state_file_path: Option<PathBuf>) -> PyResult<Vec<String>> {
-    let database = Database::new(state_file_path)?;
-    database.list_projects()
+    Database::list_projects(state_file_path)
 }
 
 #[pyfunction]
@@ -808,9 +751,9 @@ fn get_project_state(
     state_file_path: Option<PathBuf>,
     project: String,
 ) -> PyResult<Vec<Bound<PyDict>>> {
-    let database = Database::new(state_file_path)?;
+    let database = Database::new(&project, state_file_path)?;
     database
-        .get_project_state(&project)?
+        .get_project_state()?
         .into_iter()
         .map(|state| state.as_pydict(py))
         .collect::<PyResult<Vec<Bound<PyDict>>>>()
@@ -818,8 +761,8 @@ fn get_project_state(
 
 #[pyfunction]
 fn reset_project(state_file_path: Option<PathBuf>, project: String) -> PyResult<()> {
-    let database = Database::new(state_file_path)?;
-    database.reset_project(&project)
+    let database = Database::new(&project, state_file_path)?;
+    database.reset_project()
 }
 
 #[pymodule]

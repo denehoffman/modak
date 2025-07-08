@@ -10,8 +10,8 @@ from modak import run_queue_wrapper, reset_project
     "-d",
     "--db",
     "state_file",
-    type=click.Path(exists=True, file_okay=True),
-    default=Path.home() / ".modak/state.db",
+    type=click.Path(exists=True, file_okay=False),
+    default=Path.home() / ".modak",
     show_default=True,
     help="Path to the state database file.",
 )
@@ -28,8 +28,8 @@ def cli(ctx, project_name, state_file):
     "-d",
     "--db",
     "state_file",
-    type=click.Path(exists=True, file_okay=True),
-    default=Path.home() / ".modak/state.db",
+    type=click.Path(exists=True, file_okay=False),
+    default=Path.home() / ".modak",
     show_default=True,
     help="Path to the state database file.",
 )
