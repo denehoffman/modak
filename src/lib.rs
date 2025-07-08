@@ -241,6 +241,65 @@ impl Database {
 
         tx.commit().map_err(|e| PyIOError::new_err(e.to_string()))
     }
+    fn batch_upsert_task(&self, project: &str, tasks: &[TaskRecord]) -> PyResult<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn
+            .transaction()
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        tx.execute(
+            "INSERT OR IGNORE INTO projects (name) VALUES (?)",
+            [project],
+        )
+        .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+        let project_id: i64 = tx
+            .query_row("SELECT id FROM projects WHERE name = ?", [project], |row| {
+                row.get(0)
+            })
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "
+            INSERT INTO jobs (
+                project_id, job_name, inputs, outputs, log_path, status,
+                start_time, end_time, resources, isolated, payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project_id, job_name)
+            DO UPDATE SET
+                inputs = excluded.inputs,
+                outputs = excluded.outputs,
+                log_path = excluded.log_path,
+                status = excluded.status,
+                start_time = excluded.start_time,
+                end_time = excluded.end_time,
+                resources = excluded.resources,
+                isolated = excluded.isolated,
+                payload = excluded.payload
+            ",
+                )
+                .map_err(|e| PyIOError::new_err(e.to_string()))?;
+            for task in tasks {
+                stmt.execute(rusqlite::params![
+                    project_id,
+                    task.name,
+                    serde_json::to_string(&task.inputs).unwrap(),
+                    serde_json::to_string(&task.outputs).unwrap(),
+                    task.log_path.to_string_lossy(),
+                    task.status.to_string(),
+                    task.start_time.to_rfc3339(),
+                    task.end_time.to_rfc3339(),
+                    serde_json::to_string(&task.resources).unwrap(),
+                    task.isolated as i32,
+                    task.payload,
+                ])
+                .map_err(|e| PyIOError::new_err(e.to_string()))?;
+            }
+        }
+        tx.commit().map_err(|e| PyIOError::new_err(e.to_string()))
+    }
     fn get_project_state(&self, project: &str) -> PyResult<Vec<TaskRecord>> {
         let conn = self.conn.lock();
 
@@ -488,6 +547,7 @@ impl TaskQueue {
         let sorted = toposort(&graph, None)
             .map_err(|_| PyErr::new::<PyValueError, _>("Cycle in task graph"))?;
 
+        let mut tasks = Vec::with_capacity(sorted.len());
         for id in sorted {
             let task_obj = &task_objs[id];
             let name: String = task_obj.getattr("name")?.extract()?;
@@ -538,8 +598,9 @@ impl TaskQueue {
                 end_time,
                 payload,
             };
-            self.database.upsert_task(&self.project, &record)?;
+            tasks.push(record);
         }
+        self.database.batch_upsert_task(&self.project, &tasks)?;
         // skip container jobs with no outputs where all inputs are complete
         for task in self.database.get_project_state(&self.project)? {
             if task.outputs.is_empty() && self.can_queue(&task)? {
