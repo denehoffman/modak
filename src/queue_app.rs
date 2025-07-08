@@ -33,20 +33,13 @@ enum LogState {
     Open(PathBuf),
 }
 
-enum DbCommand {
-    LoadRecords(String),
-    ListProjects,
-}
-
-enum DbResult {
-    Records(Vec<TaskRecord>),
-    Projects(Vec<String>),
-}
+struct DbResult(Vec<TaskRecord>, Vec<String>);
 
 pub struct QueueApp {
     state: TableState,
-    db_tx: Sender<DbCommand>,
+    db_tx: Sender<String>,
     result_rx: Receiver<DbResult>,
+    db_pending: bool,
     current_project: usize,
     projects: Vec<String>,
     records: Vec<TaskRecord>,
@@ -69,27 +62,21 @@ impl QueueApp {
         } else {
             0
         };
-        let (db_tx, db_rx) = mpsc::channel::<DbCommand>();
+        let (db_tx, db_rx) = mpsc::channel::<String>();
         let (result_tx, result_rx) = mpsc::channel::<DbResult>();
         thread::spawn(move || {
-            for command in db_rx {
-                match command {
-                    DbCommand::LoadRecords(project) => {
-                        let mut records = database.get_project_state(&project).unwrap();
-                        records.sort_by(|a, b| (a.status, a.end_time).cmp(&(b.status, b.end_time)));
-                        let _ = result_tx.send(DbResult::Records(records));
-                    }
-                    DbCommand::ListProjects => {
-                        let projects = database.list_projects().unwrap();
-                        let _ = result_tx.send(DbResult::Projects(projects));
-                    }
-                }
+            for project_command in db_rx {
+                let mut records = database.get_project_state(&project_command).unwrap();
+                records.sort_by(|a, b| (a.status, a.end_time).cmp(&(b.status, b.end_time)));
+                let projects = database.list_projects().unwrap();
+                let _ = result_tx.send(DbResult(records, projects));
             }
         });
         let mut out = Self {
             state: TableState::default().with_selected(0),
             db_tx,
             result_rx,
+            db_pending: false,
             current_project,
             projects,
             records: Vec::default(),
@@ -106,18 +93,17 @@ impl QueueApp {
         out.poll_results();
         Ok(out)
     }
-    fn trigger_db_load(&self) {
-        let _ = self.db_tx.send(DbCommand::LoadRecords(
-            self.projects[self.current_project].clone(),
-        ));
-        let _ = self.db_tx.send(DbCommand::ListProjects);
+    fn trigger_db_load(&mut self) {
+        if !self.db_pending {
+            let _ = self.db_tx.send(self.projects[self.current_project].clone());
+            self.db_pending = true;
+        }
     }
     fn poll_results(&mut self) {
         while let Ok(result) = self.result_rx.try_recv() {
-            match result {
-                DbResult::Records(task_records) => self.records = task_records,
-                DbResult::Projects(items) => self.projects = items,
-            }
+            self.records = result.0;
+            self.projects = result.1;
+            self.db_pending = false;
         }
     }
     fn next_row(&mut self) {
