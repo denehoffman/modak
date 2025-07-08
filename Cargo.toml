@@ -9,13 +9,9 @@ name = "modak"
 crate-type = ["cdylib"]
 
 [dependencies]
-anyhow = "1.0.98"
 catppuccin = { version = "2.5.1", features = ["ratatui"] }
 chrono = "0.4.41"
-color-eyre = "0.6.5"
-crossterm = "0.29.0"
 dirs = "6.0.0"
-md5 = "0.7.0"
 parking_lot = "0.12.4"
 petgraph = "0.8.1"
 pyo3 = "0.25.0"
