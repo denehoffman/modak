@@ -19,11 +19,11 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
-use crate::{Database, TaskRecord};
+use crate::{Database, TaskRecord, TaskStatus};
 
 const INFO_TEXT: [&str; 2] = [
     "(Esc/q) quit | (k/↑) move up | (j/↓) move down | (h/←) previous project | (l/→) next project",
-    "(Enter) toggle log | (shift+k/↑) scroll to top | (shift+j/↓) scroll to bottom",
+    "(Enter) toggle log | (shift+k/↑) scroll to top | (shift+j/↓) scroll to bottom | (H) hide/show skipped tasks",
 ];
 
 #[derive(Default)]
@@ -51,6 +51,7 @@ pub struct QueueApp {
     log_window_lines: usize,
     follow_log: bool,
     exit: bool,
+    hide_skipped: bool,
 }
 
 impl QueueApp {
@@ -104,6 +105,7 @@ impl QueueApp {
             log_scroll: 0,
             follow_log: true,
             exit: false,
+            hide_skipped: false,
         };
         out.trigger_db_load();
         out.poll_results();
@@ -297,6 +299,9 @@ impl QueueApp {
                                     (self.current_project + 1) % self.projects.len();
                             }
                         }
+                        KeyCode::Char('H') => {
+                            self.hide_skipped = !self.hide_skipped;
+                        }
                         KeyCode::Enter => match &self.log_state {
                             LogState::Closed => {
                                 let log_path = self.records
@@ -333,6 +338,7 @@ impl QueueApp {
         let rows: Vec<Row> = self
             .records
             .iter()
+            .filter(|item| item.status != TaskStatus::Skipped || !self.hide_skipped)
             .enumerate()
             .map(|(i, item)| {
                 Row::new([
