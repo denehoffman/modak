@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use pyo3::{exceptions::PyValueError, PyResult};
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -331,14 +331,13 @@ impl QueueApp {
     }
     fn render_table(&mut self, frame: &mut Frame, area: Rect) {
         let header = [
-            "Task Name",
-            "Status",
-            "Start Time",
-            "Time Elapsed",
-            "End Time",
+            Cell::from("Task Name"),
+            Cell::from(Text::from("Status").centered()),
+            Cell::from(Text::from("Start Time").centered()),
+            Cell::from(Text::from("Time Elapsed").centered()),
+            Cell::from(Text::from("End Time").centered()),
         ]
         .into_iter()
-        .map(Cell::from)
         .collect::<Row>()
         .height(1);
         let now = Utc::now();
@@ -348,24 +347,34 @@ impl QueueApp {
             .filter(|item| item.status != TaskStatus::Skipped || !self.hide_skipped)
             .enumerate()
             .map(|(i, item)| {
-                let elapsed = (if item.end_time.to_utc() < now {
-                    item.end_time.to_utc()
+                let elapsed_time_string = if item.start_time.to_utc() > DateTime::<Utc>::default() {
+                    let elapsed = (if item.end_time.to_utc() < now
+                        && item.end_time.to_utc() > DateTime::<Utc>::default()
+                    {
+                        item.end_time.to_utc()
+                    } else {
+                        now
+                    }) - item.start_time.to_utc();
+                    let e_tot_seconds = elapsed.num_seconds();
+                    let e_hours = e_tot_seconds / 3600;
+                    let e_minutes = (e_tot_seconds % 3600) / 60;
+                    let e_seconds = e_tot_seconds % 60;
+                    format!("{:02}:{:02}:{:02}", e_hours, e_minutes, e_seconds)
                 } else {
-                    now
-                }) - item.start_time.to_utc();
-                let e_tot_seconds = elapsed.num_seconds();
-                let e_hours = e_tot_seconds / 3600;
-                let e_minutes = (e_tot_seconds % 3600) / 60;
-                let e_seconds = e_tot_seconds % 60;
+                    "--:--:--".to_string()
+                };
                 Row::new([
                     Cell::from(Text::from(item.name.clone())),
                     Cell::from(
                         Text::from(item.status.to_string())
+                            .centered()
                             .style(Style::new().fg(item.status.color())),
                     ),
-                    Cell::from(item.start_time.format("%H:%M:%S").to_string()),
-                    Cell::from(format!("{:02}:{:02}:{:02}", e_hours, e_minutes, e_seconds)),
-                    Cell::from(item.end_time.format("%H:%M:%S").to_string()),
+                    Cell::from(
+                        Text::from(item.start_time.format("%H:%M:%S").to_string()).centered(),
+                    ),
+                    Cell::from(Text::from(elapsed_time_string).centered()),
+                    Cell::from(Text::from(item.end_time.format("%H:%M:%S").to_string()).centered()),
                 ])
                 .style(Style::new().bg(if i % 2 == 0 {
                     catppuccin::PALETTE.mocha.colors.surface1.into()
@@ -379,10 +388,11 @@ impl QueueApp {
         let t = Table::new(
             rows,
             [
-                Constraint::Min(20),
+                Constraint::Percentage(100),
                 Constraint::Length(9),
-                Constraint::Min(12),
-                Constraint::Min(12),
+                Constraint::Min(14),
+                Constraint::Min(14),
+                Constraint::Min(14),
             ],
         )
         .header(header)
