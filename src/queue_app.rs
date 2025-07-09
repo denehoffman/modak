@@ -330,17 +330,33 @@ impl QueueApp {
         Ok(())
     }
     fn render_table(&mut self, frame: &mut Frame, area: Rect) {
-        let header = ["Task Name", "Status", "Start Time", "End Time"]
-            .into_iter()
-            .map(Cell::from)
-            .collect::<Row>()
-            .height(1);
+        let header = [
+            "Task Name",
+            "Status",
+            "Start Time",
+            "Time Elapsed",
+            "End Time",
+        ]
+        .into_iter()
+        .map(Cell::from)
+        .collect::<Row>()
+        .height(1);
+        let now = Utc::now();
         let rows: Vec<Row> = self
             .records
             .iter()
             .filter(|item| item.status != TaskStatus::Skipped || !self.hide_skipped)
             .enumerate()
             .map(|(i, item)| {
+                let elapsed = (if item.end_time.to_utc() < now {
+                    item.end_time.to_utc()
+                } else {
+                    now
+                }) - item.start_time.to_utc();
+                let e_tot_seconds = elapsed.num_seconds();
+                let e_hours = e_tot_seconds / 3600;
+                let e_minutes = (e_tot_seconds % 3600) / 60;
+                let e_seconds = e_tot_seconds % 60;
                 Row::new([
                     Cell::from(Text::from(item.name.clone())),
                     Cell::from(
@@ -348,6 +364,7 @@ impl QueueApp {
                             .style(Style::new().fg(item.status.color())),
                     ),
                     Cell::from(item.start_time.format("%H:%M:%S").to_string()),
+                    Cell::from(format!("{:02}:{:02}:{:02}", e_hours, e_minutes, e_seconds)),
                     Cell::from(item.end_time.format("%H:%M:%S").to_string()),
                 ])
                 .style(Style::new().bg(if i % 2 == 0 {
