@@ -679,16 +679,17 @@ impl TaskQueue {
                     TaskStatus::Failed => {
                         // if the task failed, go through all other tasks, check if the failed task
                         // is in their input lists, and if so, fail that task too
-                        for d_task in &tasks {
-                            let d_task_input_names: Vec<String> = self
+                        for other_task in &tasks {
+                            let other_task_input_names: Vec<String> = self
                                 .database
-                                .get_input_tasks(&self.project, &d_task.name)?
+                                .get_input_tasks(&self.project, &other_task.name)?
                                 .iter()
                                 .map(|t| t.name.clone())
                                 .collect();
-                            if d_task_input_names.contains(&task.name) {
-                                self.database
-                                    .upsert_task(&task.clone_with_status(TaskStatus::Failed))?;
+                            if other_task_input_names.contains(&task.name) {
+                                self.database.upsert_task(
+                                    &other_task.clone_with_status(TaskStatus::Failed),
+                                )?;
                             }
                         }
                     }
