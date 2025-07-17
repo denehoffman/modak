@@ -111,7 +111,7 @@ impl QueueApp {
             log_scroll: 0,
             follow_log: true,
             exit: false,
-            hide_skipped: false,
+            hide_skipped: true,
         };
         out.trigger_db_load();
         out.poll_results();
