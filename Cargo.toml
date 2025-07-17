@@ -1,6 +1,6 @@
 [package]
 name = "modak"
-version = "0.3.6"
+version = "0.3.7"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
@@ -14,8 +14,8 @@ chrono = "0.4.41"
 dirs = "6.0.0"
 heed3 = "0.22.0"
 parking_lot = "0.12.4"
-petgraph = "0.8.1"
-pyo3 = "0.25.0"
+petgraph = "0.8.2"
+pyo3 = "0.25.1"
 ratatui = { version = "0.29.0", features = ["macros"] }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0.219", features = ["derive"] }
