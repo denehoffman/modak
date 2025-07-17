@@ -55,6 +55,12 @@ pub struct QueueApp {
 }
 
 impl QueueApp {
+    fn n_records(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|item| item.status != TaskStatus::Skipped || !self.hide_skipped)
+            .count()
+    }
     pub fn new(state_file_path: Option<PathBuf>, project: Option<String>) -> PyResult<Self> {
         let projects_from_db = Database::list_projects(state_file_path.clone())?;
 
@@ -133,7 +139,7 @@ impl QueueApp {
     fn next_row(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {
-                if i >= self.records.len() - 1 {
+                if i >= self.n_records() - 1 {
                     0
                 } else {
                     i + 1
@@ -145,14 +151,14 @@ impl QueueApp {
         self.scroll_state = self.scroll_state.position(i);
     }
     fn bottom_row(&mut self) {
-        self.state.select(Some(self.records.len() - 1));
-        self.scroll_state = self.scroll_state.position(self.records.len() - 1);
+        self.state.select(Some(self.n_records() - 1));
+        self.scroll_state = self.scroll_state.position(self.n_records() - 1);
     }
     fn previous_row(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {
                 if i == 0 {
-                    self.records.len() - 1
+                    self.n_records() - 1
                 } else {
                     i - 1
                 }
@@ -224,7 +230,7 @@ impl QueueApp {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
-        self.scroll_state = self.scroll_state.content_length(self.records.len());
+        self.scroll_state = self.scroll_state.content_length(self.n_records());
         self.log_scroll_state = self
             .log_scroll_state
             .content_length(self.log_text.lines().count());
