@@ -41,6 +41,7 @@ class Task(ABC):
 class TaskQueue:
     def __init__(
         self,
+        project: str,
         *,
         workers: int = 4,
         resources: dict[str, int] | None = None,
