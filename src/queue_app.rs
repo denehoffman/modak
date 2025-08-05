@@ -179,7 +179,7 @@ impl QueueApp {
             .log_text
             .lines()
             .count()
-            .saturating_sub(self.log_window_lines);
+            .saturating_sub(self.log_window_lines - 1);
         if self.log_scroll > max_scroll {
             self.log_scroll = max_scroll;
             self.follow_log = true;
@@ -191,7 +191,7 @@ impl QueueApp {
             .log_text
             .lines()
             .count()
-            .saturating_sub(self.log_window_lines);
+            .saturating_sub(self.log_window_lines - 1);
         self.log_scroll = max_scroll;
         self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
         self.follow_log = true;
@@ -255,7 +255,7 @@ impl QueueApp {
                     Constraint::Length(4),
                 ]);
                 let rects = vertical.split(frame.area());
-                self.log_window_lines = rects[1].height as usize;
+                self.log_window_lines = rects[2].height as usize;
                 self.render_header(frame, rects[0]);
                 self.render_table(frame, rects[1]);
                 self.render_log(frame, rects[2]);
@@ -433,7 +433,7 @@ impl QueueApp {
                         .log_text
                         .lines()
                         .count()
-                        .saturating_sub(self.log_window_lines);
+                        .saturating_sub(self.log_window_lines - 1);
                     self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
                 }
                 let header = Paragraph::new(
