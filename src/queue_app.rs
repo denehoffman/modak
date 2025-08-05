@@ -14,7 +14,7 @@ use ratatui::{
     text::Text,
     widgets::{
         Block, BorderType, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
-        Table, TableState,
+        Table, TableState, Wrap,
     },
     DefaultTerminal, Frame,
 };
@@ -452,7 +452,8 @@ impl QueueApp {
                             .fg(catppuccin::PALETTE.mocha.colors.text.into())
                             .bg(catppuccin::PALETTE.mocha.colors.surface0.into()),
                     )
-                    .scroll((self.log_scroll as u16, 0));
+                    .scroll((self.log_scroll as u16, 0))
+                    .wrap(Wrap { trim: true });
                 frame.render_widget(header, chunks[0]);
                 frame.render_widget(log, chunks[1]);
                 self.render_log_scrollbar(frame, chunks[1]);
