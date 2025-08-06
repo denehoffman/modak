@@ -436,15 +436,11 @@ impl<'a> QueueApp<'a> {
                     self.log_scroll = self.log_lines_count.saturating_sub(self.log_window_lines);
                     self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
                 }
-                let header = Paragraph::new(format!(
-                    "{} -- {} {} {}",
+                let header = Paragraph::new(
                     self.records[self.state.selected().unwrap_or_default()]
                         .name
                         .clone(),
-                    self.log_lines_count,
-                    self.log_window_lines,
-                    self.log_scroll
-                ))
+                )
                 .style(
                     Style::new()
                         .fg(catppuccin::PALETTE.mocha.colors.base.into())
