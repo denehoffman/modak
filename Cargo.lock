@@ -752,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "modak"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "catppuccin",
  "chrono",
