@@ -35,7 +35,7 @@ enum LogState {
 
 struct DbResult(Vec<TaskRecord>, Vec<String>);
 
-pub struct QueueApp {
+pub struct QueueApp<'a> {
     state: TableState,
     db_tx: Sender<String>,
     result_rx: Receiver<DbResult>,
@@ -45,16 +45,17 @@ pub struct QueueApp {
     records: Vec<TaskRecord>,
     scroll_state: ScrollbarState,
     log_state: LogState,
-    log_text: String,
+    log_text: Paragraph<'a>,
     log_scroll_state: ScrollbarState,
     log_scroll: usize,
     log_window_lines: usize,
+    log_lines_count: usize,
     follow_log: bool,
     exit: bool,
     hide_skipped: bool,
 }
 
-impl QueueApp {
+impl<'a> QueueApp<'a> {
     fn n_records(&self) -> usize {
         self.records
             .iter()
@@ -105,9 +106,10 @@ impl QueueApp {
             records: Vec::default(),
             scroll_state: ScrollbarState::default(),
             log_state: LogState::default(),
-            log_text: String::default(),
+            log_text: Paragraph::default(),
             log_scroll_state: ScrollbarState::default(),
             log_window_lines: 0,
+            log_lines_count: 0,
             log_scroll: 0,
             follow_log: true,
             exit: false,
@@ -175,11 +177,7 @@ impl QueueApp {
 
     fn scroll_log_down(&mut self) {
         self.log_scroll = self.log_scroll.saturating_add(1);
-        let max_scroll = self
-            .log_text
-            .lines()
-            .count()
-            .saturating_sub(self.log_window_lines - 1);
+        let max_scroll = self.log_lines_count.saturating_sub(self.log_window_lines);
         if self.log_scroll > max_scroll {
             self.log_scroll = max_scroll;
             self.follow_log = true;
@@ -187,11 +185,7 @@ impl QueueApp {
         self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
     }
     fn scroll_log_bottom(&mut self) {
-        let max_scroll = self
-            .log_text
-            .lines()
-            .count()
-            .saturating_sub(self.log_window_lines - 1);
+        let max_scroll = self.log_lines_count.saturating_sub(self.log_window_lines);
         self.log_scroll = max_scroll;
         self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
         self.follow_log = true;
@@ -213,8 +207,16 @@ impl QueueApp {
         while !self.exit {
             self.poll_results();
             if let LogState::Open(path) = &self.log_state {
-                self.log_text =
-                    std::fs::read_to_string(path).unwrap_or("Error reading log".to_string());
+                self.log_text = Paragraph::new(
+                    std::fs::read_to_string(path).unwrap_or("Error reading log".to_string()),
+                )
+                .style(
+                    Style::new()
+                        .fg(catppuccin::PALETTE.mocha.colors.text.into())
+                        .bg(catppuccin::PALETTE.mocha.colors.surface0.into()),
+                )
+                .scroll((self.log_scroll as u16, 0))
+                .wrap(Wrap { trim: true });
             }
             terminal.draw(|frame| self.draw(frame))?;
             let timeout = tick_rate
@@ -233,7 +235,7 @@ impl QueueApp {
         self.scroll_state = self.scroll_state.content_length(self.n_records());
         self.log_scroll_state = self
             .log_scroll_state
-            .content_length(self.log_text.lines().count());
+            .content_length(self.log_lines_count.saturating_sub(self.log_window_lines));
         match &self.log_state {
             LogState::Closed => {
                 let vertical = &Layout::vertical([
@@ -255,9 +257,11 @@ impl QueueApp {
                     Constraint::Length(4),
                 ]);
                 let rects = vertical.split(frame.area());
-                self.log_window_lines = rects[2].height as usize;
                 self.render_header(frame, rects[0]);
                 self.render_table(frame, rects[1]);
+                self.log_window_lines = rects[2].height as usize - 1;
+
+                self.log_lines_count = self.log_text.line_count(rects[2].width - 2);
                 self.render_log(frame, rects[2]);
                 self.render_footer(frame, rects[3]);
             }
@@ -429,33 +433,25 @@ impl QueueApp {
                     .constraints([Constraint::Length(1), Constraint::Min(1)])
                     .split(area);
                 if self.follow_log {
-                    self.log_scroll = self
-                        .log_text
-                        .lines()
-                        .count()
-                        .saturating_sub(self.log_window_lines - 1);
+                    self.log_scroll = self.log_lines_count.saturating_sub(self.log_window_lines);
                     self.log_scroll_state = self.log_scroll_state.position(self.log_scroll);
                 }
-                let header = Paragraph::new(
+                let header = Paragraph::new(format!(
+                    "{} -- {} {} {}",
                     self.records[self.state.selected().unwrap_or_default()]
                         .name
                         .clone(),
-                )
+                    self.log_lines_count,
+                    self.log_window_lines,
+                    self.log_scroll
+                ))
                 .style(
                     Style::new()
                         .fg(catppuccin::PALETTE.mocha.colors.base.into())
                         .bg(catppuccin::PALETTE.mocha.colors.mauve.into()),
                 );
-                let log = Paragraph::new(self.log_text.clone())
-                    .style(
-                        Style::new()
-                            .fg(catppuccin::PALETTE.mocha.colors.text.into())
-                            .bg(catppuccin::PALETTE.mocha.colors.surface0.into()),
-                    )
-                    .scroll((self.log_scroll as u16, 0))
-                    .wrap(Wrap { trim: true });
                 frame.render_widget(header, chunks[0]);
-                frame.render_widget(log, chunks[1]);
+                frame.render_widget(&self.log_text, chunks[1]);
                 self.render_log_scrollbar(frame, chunks[1]);
             }
         }
